@@ -370,6 +370,8 @@ def compute_subspace_metrics(
     F_L_c = _center(F_L)
     F_S_c = _center(F_S)
 
+    same_dim = F_L.shape[1] == F_S.shape[1]
+
     V_L_full = _top_components(F_L_c, max(n_components_list))
     V_S_full = _top_components(F_S_c, max(n_components_list))
 
@@ -378,12 +380,20 @@ def compute_subspace_metrics(
     containment_gap = {}
 
     for r in n_components_list:
-        r_eff = min(r, V_L_full.shape[1], V_S_full.shape[1])
-        V_L = V_L_full[:, :r_eff]
-        V_S = V_S_full[:, :r_eff]
-
-        c_s_in_l = _subspace_containment(V_S, V_L)
-        c_l_in_s = _subspace_containment(V_L, V_S)
+        if same_dim:
+            r_eff = min(r, V_L_full.shape[1], V_S_full.shape[1])
+            V_L = V_L_full[:, :r_eff]
+            V_S = V_S_full[:, :r_eff]
+            c_s_in_l = _subspace_containment(V_S, V_L)
+            c_l_in_s = _subspace_containment(V_L, V_S)
+        else:
+            r_eff = min(r, V_L_full.shape[1], V_S_full.shape[1])
+            V_L = V_L_full[:, :r_eff]
+            V_S = V_S_full[:, :r_eff]
+            scores_S = F_S_c @ V_S
+            scores_L = F_L_c @ V_L
+            c_s_in_l = _regression_r2(F_L_c, scores_S)
+            c_l_in_s = _regression_r2(F_S_c, scores_L)
 
         containment_s_in_l[r] = c_s_in_l
         containment_l_in_s[r] = c_l_in_s
@@ -394,6 +404,21 @@ def compute_subspace_metrics(
         containment_l_in_s=containment_l_in_s,
         containment_gap=containment_gap,
     )
+
+
+def _regression_r2(X: np.ndarray, Y: np.ndarray) -> float:
+    """Fraction of Y's variance explained by a linear function of X (in-sample R²).
+
+    Used for cross-dimension subspace containment when d_L != d_S.
+    """
+    reg = LinearRegression(fit_intercept=False)
+    reg.fit(X, Y)
+    Y_pred = reg.predict(X)
+    ss_res = np.sum((Y - Y_pred) ** 2)
+    ss_tot = np.sum((Y - Y.mean(axis=0)) ** 2)
+    if ss_tot == 0:
+        return 0.0
+    return float(max(0.0, 1.0 - ss_res / ss_tot))
 
 
 def _center(F: np.ndarray) -> np.ndarray:
