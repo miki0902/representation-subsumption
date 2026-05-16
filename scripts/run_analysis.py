@@ -25,10 +25,64 @@ def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="Representation Subsumption 分析")
     p.add_argument("--config", default="configs/experiment.yaml")
     p.add_argument("--debug", action="store_true")
+    # dry-run: パイプライン全体が動くかを少数サンプルで確認するモード
+    p.add_argument("--dry-run", action="store_true",
+                   help="dry-run モード: 少数サンプルで全パイプラインの動作確認を行う")
+    p.add_argument("--dry-run-samples", type=int, default=5,
+                   help="dry-run 時に使用するサンプル数（デフォルト: 5）")
     return p.parse_args()
 
 
-def run(cfg: dict) -> None:
+def _apply_dry_run(
+    F_L: np.ndarray,
+    F_S: np.ndarray,
+    cfg: dict,
+    n_samples: int,
+    seed: int,
+) -> tuple[np.ndarray, np.ndarray, dict]:
+    """dry-run 用にサンプルを切り出し、設定を少数サンプル向けに上書きする。
+
+    なぜ cfg を上書きするか:
+      mutual kNN (k < n_test)・CCA (n_components < n_train) の制約を
+      サンプル数から逆算して満たすため。元の cfg は変更せず、コピーを返す。
+    """
+    import copy
+    cfg = copy.deepcopy(cfg)
+
+    rng = np.random.default_rng(seed)
+    idx = rng.choice(len(F_L), size=min(n_samples, len(F_L)), replace=False)
+    F_L = F_L[idx]
+    F_S = F_S[idx]
+    n = len(F_L)
+
+    # test_size を調整して n_test >= 2 を保証する
+    test_size = max(cfg.get("linear", {}).get("test_size", 0.2), 2 / n)
+    n_test = max(2, int(np.ceil(n * test_size)))
+    n_train = n - n_test
+    k_max = min(n_test, n) - 1
+
+    # linear / geometry の設定を上書きする
+    cfg.setdefault("linear", {})["test_size"] = test_size
+    cfg.setdefault("geometry", {})["knn_k"] = [k for k in cfg["geometry"].get("knn_k", [5, 10, 20]) if k <= k_max] or [max(1, k_max)]
+
+    # CCA の設定を上書きする
+    cca_cfg = cfg.setdefault("cca", {})
+    cca_cfg["test_size"] = test_size
+    n_comp = min(cca_cfg.get("n_components", 16), max(1, n_train - 1))
+    cca_cfg["n_components"] = n_comp
+    cca_cfg["r_values"] = [r for r in cca_cfg.get("r_values", [4, 8, 16]) if r <= n_comp] or [1]
+    cca_cfg["knn_k"] = [k for k in cca_cfg.get("knn_k", [5, 10, 20]) if k <= k_max] or [max(1, k_max)]
+    cca_cfg["use_regularized"] = True  # 少数サンプルでは共分散行列が必ず特異になる
+
+    logger.warning(
+        f"[dry-run] n={n}, n_train={n_train}, n_test={n_test}, "
+        f"knn_k={cfg['geometry']['knn_k']}, n_components={n_comp}, "
+        f"r_values={cca_cfg['r_values']}, Regularized CCA を強制使用"
+    )
+    return F_L, F_S, cfg
+
+
+def run(cfg: dict, dry_run: bool = False, dry_run_samples: int = 5) -> None:
     """設定辞書を受け取り、全指標の計算・レポート生成・図保存を行う。"""
     out_cfg = cfg.get("output", {})
     utils.ensure_dirs(
@@ -43,6 +97,12 @@ def run(cfg: dict) -> None:
     small_feat = load_features(feat_cfg["small_path"], model_name=cfg["experiment"].get("small_model", "small"))
 
     F_L, F_S = align_features(large_feat, small_feat)
+
+    # dry-run: サンプルを切り出して設定を調整する
+    if dry_run:
+        seed = cfg.get("linear", {}).get("random_state", 42)
+        F_L, F_S, cfg = _apply_dry_run(F_L, F_S, cfg, dry_run_samples, seed)
+
     n_samples, d_L = F_L.shape
     d_S = F_S.shape[1]
     logger.info(f"分析対象: n={n_samples}, d_L={d_L}, d_S={d_S}")
@@ -196,7 +256,7 @@ def main() -> None:
     args = parse_args()
     utils.setup_logging(logging.DEBUG if args.debug else logging.INFO)
     cfg = utils.load_yaml(args.config)
-    run(cfg)
+    run(cfg, dry_run=args.dry_run, dry_run_samples=args.dry_run_samples)
 
 
 if __name__ == "__main__":

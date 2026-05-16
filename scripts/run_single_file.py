@@ -961,7 +961,58 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--debug", action="store_true")
     p.add_argument("--figures", action="store_true", help="図を生成する（matplotlib が必要）")
+    # dry-run: パイプライン全体が動くかを少数サンプルで確認するモード
+    p.add_argument("--dry-run", action="store_true",
+                   help="dry-run モード: 少数サンプルで全パイプラインの動作確認を行う")
+    p.add_argument("--dry-run-samples", type=int, default=5,
+                   help="dry-run 時に使用するサンプル数（デフォルト: 5）")
     return p.parse_args()
+
+
+def _apply_dry_run(
+    F_L: np.ndarray,
+    F_S: np.ndarray,
+    args: argparse.Namespace,
+) -> tuple[np.ndarray, np.ndarray]:
+    """dry-run 用にサンプルを切り出し、パラメータを少数サンプル向けに調整する。
+
+    なぜパラメータ調整が必要か:
+      mutual kNN は k < n_test を要求し、CCA は n_components < n_train を要求する。
+      5 サンプル程度では元のデフォルト値がこれらの制約を破るため、
+      サンプル数から逆算して安全な値に上書きする。
+    """
+    n_total = args.dry_run_samples
+    rng = np.random.default_rng(args.seed)
+    idx = rng.choice(len(F_L), size=min(n_total, len(F_L)), replace=False)
+    F_L = F_L[idx]
+    F_S = F_S[idx]
+    n = len(F_L)
+
+    # test_size を調整して n_test >= 2 を保証する
+    # （merge 空間 kNN は k < n_test を必要とするため最低 2 サンプル必要）
+    args.test_size = max(args.test_size, 2 / n)
+    n_test = max(2, int(np.ceil(n * args.test_size)))
+    n_train = n - n_test
+
+    # knn_k: k < min(n_test, n) を満たす値のみ残す
+    k_max = min(n_test, n) - 1
+    args.knn_k = [k for k in args.knn_k if k <= k_max] or [max(1, k_max)]
+
+    # n_components: n_train - 1 を超えられない（CCA の制約）
+    args.n_components = min(args.n_components, max(1, n_train - 1))
+
+    # r_values: n_components 以下の値のみ残す
+    args.r_values = [r for r in args.r_values if r <= args.n_components] or [1]
+
+    # 少数サンプルでは共分散行列が必ず特異になるため正則化を強制する
+    args.regularized = True
+
+    logger.warning(
+        f"[dry-run] n={n}, n_train={n_train}, n_test={n_test}, "
+        f"knn_k={args.knn_k}, n_components={args.n_components}, "
+        f"r_values={args.r_values}, Regularized CCA を強制使用"
+    )
+    return F_L, F_S
 
 
 def main() -> None:
@@ -979,6 +1030,11 @@ def main() -> None:
     small_feat = load_features(args.small, model_name=args.small_model)
 
     F_L, F_S = align_features(large_feat, small_feat)
+
+    # dry-run: サンプルを切り出してパラメータを調整する
+    if args.dry_run:
+        F_L, F_S = _apply_dry_run(F_L, F_S, args)
+
     n_samples, d_L = F_L.shape
     d_S = F_S.shape[1]
     logger.info(f"分析対象: n={n_samples}, d_L={d_L}, d_S={d_S}")
