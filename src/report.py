@@ -12,14 +12,14 @@ from pathlib import Path
 
 from .metrics_linear import LinearMetrics
 from .metrics_geometry import GeometricMetrics
-from .metrics_subspace import SubspaceMetrics
+from .metrics_cca import CCAMetrics
 
 
 def generate_report(
     cfg: dict,
     linear: LinearMetrics,
     geometry: GeometricMetrics,
-    subspace: SubspaceMetrics,
+    cca: CCAMetrics,
     n_samples: int,
     d_L: int,
     d_S: int,
@@ -28,11 +28,23 @@ def generate_report(
 ) -> str:
     """Markdown サマリーレポートを構築してファイルに書き出す。
 
+    レポートの構成:
+      1. ヘッダー（実験名・モデル名・日時）
+      2. データセット（サンプル数・d_L・d_S）
+      3. 線形包含（R² テーブル）
+      4. 幾何的整合（CKA・RSA・kNN テーブル）
+      5. CCA / Regularized CCA（正準相関テーブル・meanCCA@r・sharedScore@r・normalizedSharedScore@r）
+      6. Merge 空間幾何（CKA・RSA・kNN on Z_L, Z_S）
+      7. Train/Test Gap（過学習チェック）
+      8. 主要な観察（自動解釈）
+      9. 層ペア分析（オプション）
+
     戻り値: レポート文字列（後続の処理でも利用できるよう返す）。
     """
     lines = []
     exp = cfg.get("experiment", {})
 
+    # 1. ヘッダー
     lines += [
         "# Representation Subsumption 分析レポート",
         "",
@@ -41,6 +53,10 @@ def generate_report(
         f"**Large モデル**: `{exp.get('large_model', 'N/A')}`",
         f"**Small モデル**: `{exp.get('small_model', 'N/A')}`",
         "",
+    ]
+
+    # 2. データセット
+    lines += [
         "## データセット",
         "",
         "| 項目 | 値 |",
@@ -51,6 +67,7 @@ def generate_report(
         "",
     ]
 
+    # 3. 線形包含
     lines += [
         "## 線形包含",
         "",
@@ -64,6 +81,7 @@ def generate_report(
         "",
     ]
 
+    # 4. 幾何的整合
     lines += [
         "## 幾何的整合",
         "",
@@ -76,21 +94,82 @@ def generate_report(
         lines.append(f"| mutual_kNN@{k} | {v:.4f} |")
     lines.append("")
 
+    # 5. CCA / Regularized CCA
+    cca_method = "Regularized CCA" if cca.used_regularized else "標準 CCA"
     lines += [
-        "## 部分空間包含",
+        "## CCA / Regularized CCA",
         "",
-        "| r | S_in_L | L_in_S | Gap (S_in_L − L_in_S) |",
-        "|---|--------|--------|------------------------|",
+        f"**手法**: {cca_method}  ",
+        f"**正準成分数**: {cca.n_components}  ",
     ]
-    for r in sorted(subspace.containment_s_in_l):
-        s_in_l = subspace.containment_s_in_l[r]
-        l_in_s = subspace.containment_l_in_s[r]
-        gap = subspace.containment_gap[r]
-        lines.append(f"| {r} | {s_in_l:.4f} | {l_in_s:.4f} | {gap:.4f} |")
+    if cca.used_regularized:
+        lines += [f"**λ_L**: {cca.lambda_L}  ", f"**λ_S**: {cca.lambda_S}  "]
     lines.append("")
 
-    lines += _interpretation_block(linear, geometry, subspace)
+    # 正準相関テーブル（上位 min(n_components, 8) 成分を表示する）
+    n_show = min(cca.n_components, 8)
+    lines += [
+        "### 正準相関（テストセット）",
+        "",
+        "| 成分 | 正準相関 ρ |",
+        "|------|-----------|",
+    ]
+    for i in range(n_show):
+        lines.append(f"| {i + 1} | {cca.canonical_correlations[i]:.4f} |")
+    if cca.n_components > n_show:
+        lines.append(f"| ... | （{cca.n_components - n_show} 成分省略）|")
+    lines.append("")
 
+    # meanCCA@r テーブル
+    lines += [
+        "### 集約指標",
+        "",
+        "| 指標 | r=4 | r=8 | r=16 |",
+        "|------|-----|-----|------|",
+    ]
+    _r_fmt = lambda d, r: f"{d.get(r, float('nan')):.4f}" if r in d else "N/A"
+    lines.append(
+        f"| meanCCA@r | {_r_fmt(cca.mean_cca, 4)} | {_r_fmt(cca.mean_cca, 8)} | {_r_fmt(cca.mean_cca, 16)} |"
+    )
+    lines.append(
+        f"| sharedScore@r | {_r_fmt(cca.shared_score, 4)} | {_r_fmt(cca.shared_score, 8)} | {_r_fmt(cca.shared_score, 16)} |"
+    )
+    lines.append(
+        f"| normalizedSharedScore@r | {_r_fmt(cca.normalized_shared_score, 4)} | {_r_fmt(cca.normalized_shared_score, 8)} | {_r_fmt(cca.normalized_shared_score, 16)} |"
+    )
+    lines.append("")
+
+    # 6. Merge 空間幾何
+    lines += [
+        "## Merge 空間幾何（Z_L vs Z_S）",
+        "",
+        "| 指標 | 値 |",
+        "|------|---|",
+        f"| CKA (merge) | {cca.merge_cka:.4f} |",
+        f"| RSA Spearman ρ (merge) | {cca.merge_rsa_spearman:.4f} |",
+    ]
+    for k, v in sorted(cca.merge_mutual_knn.items()):
+        lines.append(f"| mutual_kNN@{k} (merge) | {v:.4f} |")
+    lines.append("")
+
+    # 7. Train/Test Gap（過学習チェック）
+    lines += [
+        "## Train/Test Gap（過学習チェック）",
+        "",
+        "| 成分 | 訓練 ρ | テスト ρ | Gap |",
+        "|------|--------|---------|-----|",
+    ]
+    for i in range(n_show):
+        rho_train = cca.canonical_correlations_train[i]
+        rho_test = cca.canonical_correlations[i]
+        gap = cca.train_test_gap[i]
+        lines.append(f"| {i + 1} | {rho_train:.4f} | {rho_test:.4f} | {gap:.4f} |")
+    lines.append("")
+
+    # 8. 主要な観察
+    lines += _interpretation_block(linear, geometry, cca)
+
+    # 9. 層ペア分析（オプション）
     if layer_results:
         lines += _layer_results_section(layer_results)
 
@@ -105,8 +184,9 @@ def generate_report(
 def _interpretation_block(
     linear: LinearMetrics,
     geometry: GeometricMetrics,
-    subspace: SubspaceMetrics,
+    cca: CCAMetrics,
 ) -> list[str]:
+    """各指標の値を自動解釈して観察コメントを生成する。"""
     lines = ["## 主要な観察", ""]
 
     # 線形包含の解釈
@@ -128,21 +208,39 @@ def _interpretation_block(
     else:
         lines += ["- **CKA**: 低い — 表現の幾何構造が異なります。"]
 
-    # 部分空間包含の解釈
-    max_r = max(subspace.containment_s_in_l)
-    c_s_in_l = subspace.containment_s_in_l[max_r]
-    if c_s_in_l > 0.9:
-        lines += [f"- **部分空間 (r={max_r})**: Small の主方向は Large の空間によく含まれています。"]
-    elif c_s_in_l > 0.6:
-        lines += [f"- **部分空間 (r={max_r})**: Small の Large への部分的な包含があります。"]
+    # CCA の解釈（利用可能な最大の r 値を使用する）
+    r_values_available = sorted(cca.mean_cca.keys())
+    if r_values_available:
+        max_r = r_values_available[-1]
+        mean_corr = cca.mean_cca[max_r]
+        if mean_corr > 0.8:
+            lines += [f"- **CCA (r={max_r})**: 非常に高い平均正準相関 — 強い共有潜在構造があります。"]
+        elif mean_corr > 0.5:
+            lines += [f"- **CCA (r={max_r})**: 中程度の平均正準相関 — 部分的な共有構造があります。"]
+        else:
+            lines += [f"- **CCA (r={max_r})**: 低い平均正準相関 — 共有潜在構造が少ない可能性があります。"]
+
+    # Merge 空間の解釈
+    if cca.merge_cka > 0.8:
+        lines += ["- **Merge 空間 CKA**: 高い — CCA 写像後の表現は非常に類似しています。"]
+    elif cca.merge_cka > 0.5:
+        lines += ["- **Merge 空間 CKA**: 中程度 — CCA 写像後に一定の類似構造があります。"]
     else:
-        lines += [f"- **部分空間 (r={max_r})**: Small には Large の部分空間外の主方向が存在します。"]
+        lines += ["- **Merge 空間 CKA**: 低い — CCA 写像後も表現構造が異なります。"]
+
+    # Train/Test Gap の解釈（過学習の警告）
+    mean_gap = float(cca.train_test_gap.mean())
+    if mean_gap > 0.2:
+        lines += [f"- **⚠ Train/Test Gap が大きい** (平均 {mean_gap:.3f}): 過学習の可能性があります。Regularized CCA の λ を大きくすることを検討してください。"]
+    else:
+        lines += [f"- **Train/Test Gap**: 小さい (平均 {mean_gap:.3f}) — 正準相関の推定が安定しています。"]
 
     lines.append("")
     return lines
 
 
 def _layer_results_section(layer_results: list[dict]) -> list[str]:
+    """層ペア分析結果のテーブルセクションを生成する。"""
     lines = ["## 層ペア分析", ""]
     lines += ["| Large 層 | Small 層 | R²_L→S | R²_S→L | CKA | RSA | kNN@10 |"]
     lines += ["|----------|----------|--------|--------|-----|-----|--------|"]

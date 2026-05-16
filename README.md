@@ -1,6 +1,6 @@
 # Representation Subsumption / Feature Hierarchy 分析ツール
 
-マルチスケールニューラルネットワークモデルにおいて、**Large モデル**の表現が **Small モデル**の表現を包含（含有）しているかどうかを定量化する研究用ツールキットです。線形包含・幾何的整合・部分空間包含の3系統の指標を実装しています。
+マルチスケールニューラルネットワークモデルにおいて、**Large モデル**の表現が **Small モデル**の表現を包含（含有）しているかどうかを定量化する研究用ツールキットです。線形包含・幾何的整合・CCA / Regularized CCA の3系統の指標を実装しています。
 
 ---
 
@@ -10,7 +10,10 @@
 
 - **線形包含**: Small モデルの特徴は Large モデルの特徴から線形予測できるか（その逆は難しいか）？
 - **幾何的整合**: サンプル間の関係構造（距離・近傍）はモデル間で共通しているか？
-- **部分空間包含**: Small モデルの表現の主要方向は Large モデルの表現の張る空間に含まれるか？
+- **CCA / Regularized CCA**: Large と Small をそれぞれ線形写像で共通空間（merge 空間）へ写像したとき、両モデルで共有される潜在構造はどれだけ強いか？
+
+なぜ部分空間包含ではなく CCA を使うか:
+  d_L != d_S の場合、Small の主成分方向と Large の主成分方向は異なる環境空間に存在するため、直接的な部分空間包含は定義できません。CCA は両モデルにとってフェアな共有潜在構造を評価できます。高次元特徴（d >> n）では Regularized CCA が自動的に選択され、数値的安定性を確保します。
 
 本コードベースはこの3分析を統一パイプラインで提供し、再現可能な設定ファイルと構造化 Markdown レポートを出力します。
 
@@ -50,7 +53,8 @@ python scripts/run_single_file.py \
     --large-model resnet50 \
     --small-model resnet18 \
     --knn-k 5 10 20 \
-    --n-components 16 32 64 128 \
+    --n-components 16 \
+    --r-values 4 8 16 \
     --output-dir results \
     --figures
 
@@ -59,6 +63,12 @@ python scripts/run_single_file.py \
     --large features/large.pt \
     --small features/small.pt \
     --ridge --ridge-alpha 10.0
+
+# Regularized CCA を強制使用する場合
+python scripts/run_single_file.py \
+    --large features/large.npy \
+    --small features/small.npy \
+    --regularized --lambda-l 1e-2 --lambda-s 1e-2
 ```
 
 ---
@@ -77,7 +87,7 @@ representation_subsumption/
     feature_io.py         # 特徴量の読み込み・アライメント（.pt, .npy, .npz）
     metrics_linear.py     # 双方向 R² / MSE
     metrics_geometry.py   # CKA, RSA, mutual kNN
-    metrics_subspace.py   # SVD による部分空間包含度
+    metrics_cca.py        # CCA / Regularized CCA による merge 空間分析
     report.py             # Markdown レポート生成
     utils.py              # ロギング・シード・YAML 読み込み
   scripts/
@@ -87,7 +97,7 @@ representation_subsumption/
     test_feature_io.py
     test_linear_metrics.py
     test_geometry_metrics.py
-    test_subspace_metrics.py
+    test_cca_metrics.py
   results/
     figures/              # PNG 図表
     tables/               # CSV テーブル（将来利用）
@@ -112,7 +122,15 @@ representation_subsumption/
 | `linear.use_ridge` | OLS の代わりに Ridge 回帰を使用する | `false` |
 | `linear.ridge_alpha` | Ridge の正則化強度 α | `1.0` |
 | `geometry.knn_k` | mutual kNN の k 値のリスト | `[5, 10, 20]` |
-| `subspace.n_components` | 部分空間分析の r 値のリスト | `[16, 32, 64, 128]` |
+| `cca.n_components` | 正準成分数 | `16` |
+| `cca.r_values` | meanCCA・sharedScore を計算する r 値リスト | `[4, 8, 16]` |
+| `cca.knn_k` | merge 空間 mutual kNN の k 値リスト | `[5, 10, 20]` |
+| `cca.test_size` | CCA の train/test 分割比率 | `0.2` |
+| `cca.random_state` | CCA の train/test split の乱数シード | `42` |
+| `cca.use_regularized` | `null` = 自動検出（n < d のとき Regularized CCA を使用） | `null` |
+| `cca.lambda_L` | Regularized CCA の Large 側 ridge 係数 | `1.0e-3` |
+| `cca.lambda_S` | Regularized CCA の Small 側 ridge 係数 | `1.0e-3` |
+| `cca.standardize` | CCA 前に各次元を標準化するか | `true` |
 | `output.results_dir` | 結果出力のルートディレクトリ | `"results"` |
 | `output.figures_dir` | 図表の出力パス | `"results/figures"` |
 | `output.tables_dir` | テーブルの出力パス | `"results/tables"` |
@@ -144,7 +162,7 @@ pytest tests/ -v
 ```bash
 pytest tests/test_linear_metrics.py -v
 pytest tests/test_geometry_metrics.py -v
-pytest tests/test_subspace_metrics.py -v
+pytest tests/test_cca_metrics.py -v
 pytest tests/test_feature_io.py -v
 ```
 
@@ -168,13 +186,18 @@ pytest tests/test_feature_io.py -v
 - **RSA**（Representational Similarity Analysis）: ペアワイズ距離行列の上三角部分の Spearman 相関。ランク順の幾何構造を捉えます。
 - **Mutual kNN@k**: 各サンプルの k 近傍がモデル間で共有される割合の平均。局所的な近傍構造の一致を測定します。
 
-### 部分空間包含（`metrics_subspace.py`）
+### CCA / Regularized CCA（`metrics_cca.py`）
 
-- SVD により各モデルの特徴行列から上位 r 主方向を抽出します。
-- **Containment(S in L)** = `||P_L V_S||_F² / ||V_S||_F²`: Small の上位 r 方向が Large の上位 r 部分空間にどれだけ射影されるか。
-- **Containment(L in S)**: 逆方向。
-- **Gap** = Containment(S in L) − Containment(L in S): 正の値は Small の構造が Large によって説明されやすいことを示します。
-- 1.0 = 完全包含、0.0 = 直交する部分空間。
+- **正準相関 ρ_i**: i 番目の正準成分ペア（Z_L の i 列、Z_S の i 列）の Pearson 相関。高いほど共有構造が強い。
+- **meanCCA@r** = 上位 r 次元の平均正準相関: 共有構造の「密度」を示す代表値。
+- **sharedScore@r** = Σ_{i=1}^{r} ρ_i²: 上位 r 成分で共有される分散の総量。
+- **normalizedSharedScore@r** = sharedScore@r / r: [0, 1] に正規化。1 = 上位 r 成分すべてで完全相関。
+- **Train/Test Gap**: 訓練相関 - テスト相関。大きな Gap は過学習を示し、λ を大きくすることで改善できます。
+- **Merge 空間 CKA/RSA/kNN**: CCA 写像後の Z_L と Z_S の幾何的類似度。
+
+#### 自動 Regularized CCA の選択
+
+`use_regularized: null`（デフォルト）のとき、n_train < d_L または n_train < d_S であれば自動的に Regularized CCA が使用されます。この場合、共分散行列に λI が加算されて数値的安定性が確保されます。
 
 ---
 
@@ -183,3 +206,4 @@ pytest tests/test_feature_io.py -v
 - Kornblith, S., Norouzi, M., Lee, H., & Hinton, G. (2019). Similarity of Neural Network Representations Revisited. *ICML*.
 - Huh, M., Cheung, B., Wang, T., & Isola, P. (2024). The Platonic Representation Hypothesis. *ICML*.
 - Kriegeskorte, N., Mur, M., & Bandettini, P. (2008). Representational similarity analysis – connecting the branches of systems neuroscience. *Frontiers in Systems Neuroscience*.
+- Hotelling, H. (1936). Relations Between Two Sets of Variates. *Biometrika*.

@@ -1,7 +1,7 @@
 """
 Representation Subsumption 分析の自己完結型単一ファイルスクリプト。
 
-feature_io, metrics_linear, metrics_geometry, metrics_subspace, report, utils
+feature_io, metrics_linear, metrics_geometry, metrics_cca, report, utils
 のすべてのロジックをここにインライン化しています。
 requirements.txt に記載の標準依存パッケージ以外のインストール不要です。
 
@@ -9,7 +9,7 @@ requirements.txt に記載の標準依存パッケージ以外のインストー
   python scripts/run_single_file.py --large features/large.npy --small features/small.npy
   python scripts/run_single_file.py --large features/large.pt --small features/small.pt \\
       --large-model resnet50 --small-model resnet18 \\
-      --knn-k 5 10 20 --n-components 16 32 64 --output-dir results
+      --knn-k 5 10 20 --n-components 16 --r-values 4 8 16 --output-dir results
 """
 
 from __future__ import annotations
@@ -39,6 +39,7 @@ logger = logging.getLogger(__name__)
 
 
 def setup_logging(level: int = logging.INFO) -> None:
+    """ログフォーマットとレベルを設定する。"""
     logging.basicConfig(
         format="%(asctime)s [%(levelname)s] %(name)s: %(message)s",
         level=level,
@@ -46,16 +47,19 @@ def setup_logging(level: int = logging.INFO) -> None:
 
 
 def set_seed(seed: int) -> None:
+    """Python・NumPy の乱数シードを固定して再現性を確保する。"""
     random.seed(seed)
     np.random.seed(seed)
 
 
 def load_yaml(path: str) -> dict:
+    """YAML ファイルを読み込んで辞書として返す。"""
     with open(path) as f:
         return yaml.safe_load(f)
 
 
 def ensure_dirs(*paths: str) -> None:
+    """指定されたディレクトリを存在しない場合は再帰的に作成する。"""
     for p in paths:
         Path(p).mkdir(parents=True, exist_ok=True)
 
@@ -76,7 +80,9 @@ def safe_r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
 
 @dataclass
 class FeatureSet:
-    features: np.ndarray  # shape: (n_samples, d)
+    """特徴量ファイルの読み込み結果を格納するデータクラス。"""
+
+    features: np.ndarray       # shape: (n_samples, d)
     sample_ids: Optional[np.ndarray]
     source_path: str
     model_name: str
@@ -197,6 +203,8 @@ def align_features(large: FeatureSet, small: FeatureSet) -> tuple[np.ndarray, np
 
 @dataclass
 class LinearMetrics:
+    """線形回帰による包含指標を格納するデータクラス。"""
+
     r2_l_to_s: float
     r2_s_to_l: float
     mse_l_to_s: float
@@ -218,8 +226,6 @@ def compute_linear_metrics(
       高次元特徴量では訓練データへの過適合が起きやすく、
       R² が見かけ上高くなって包含の強さを過大評価してしまう。
       テストセットで評価することで汎化を確認する。
-
-    Ridge 回帰は近似共線的な特徴量を扱う場合のオプション。
     """
     F_L_train, F_L_test, F_S_train, F_S_test = train_test_split(
         F_L, F_S, test_size=test_size, random_state=random_state
@@ -265,6 +271,8 @@ def _fit_and_eval(
 
 @dataclass
 class GeometricMetrics:
+    """CKA・RSA・mutual kNN などの幾何的整合指標を格納するデータクラス。"""
+
     cka: float
     rsa_spearman: float
     mutual_knn: dict[int, float]  # k -> 重なり率
@@ -275,6 +283,7 @@ def compute_geometric_metrics(
     F_S: np.ndarray,
     knn_ks: list[int] = (5, 10, 20),
 ) -> GeometricMetrics:
+    """CKA・RSA・mutual kNN をまとめて計算する。"""
     return GeometricMetrics(
         cka=compute_cka(F_L, F_S),
         rsa_spearman=compute_rsa(F_L, F_S),
@@ -300,11 +309,12 @@ def compute_cka(F_L: np.ndarray, F_S: np.ndarray) -> float:
 
 
 def _gram(F: np.ndarray) -> np.ndarray:
+    """Gram 行列 F @ F^T を計算する。"""
     return F @ F.T
 
 
 def _hsic(K: np.ndarray, L: np.ndarray) -> float:
-    """中心化 Gram 行列による不偏 HSIC 推定量。
+    """中心化 Gram 行列による不偏 HSIC 推定量を計算する。
 
     なぜ中心化するか:
       中心化によって平均の影響を取り除き、共分散構造のみを取り出す。
@@ -317,7 +327,7 @@ def _hsic(K: np.ndarray, L: np.ndarray) -> float:
 
 
 def compute_rsa(F_L: np.ndarray, F_S: np.ndarray) -> float:
-    """表現類似性分析（RSA）: RDM の Spearman 相関。
+    """表現類似性分析（RSA）: RDM の Spearman 相関を計算する。
 
     なぜ RSA を使うか:
       ペアワイズ距離のランク順構造を比較し、単調変換に頑健な幾何構造を捉える。
@@ -335,7 +345,7 @@ def _upper_tri(D: np.ndarray) -> np.ndarray:
 
 
 def compute_mutual_knn(F_L: np.ndarray, F_S: np.ndarray, k: int) -> float:
-    """Mutual k-NN 重なり率: 両空間で共有される k 近傍の割合。
+    """Mutual k-NN 重なり率: 両空間で共有される k 近傍の割合を計算する。
 
     なぜ mutual kNN を使うか:
       座標が異なっていても「どのサンプルが近いか」という局所的な
@@ -363,114 +373,235 @@ def _knn_indices(F: np.ndarray, k: int) -> np.ndarray:
 
 
 # ---------------------------------------------------------------------------
-# metrics_subspace
+# metrics_cca
 # ---------------------------------------------------------------------------
 
 
 @dataclass
-class SubspaceMetrics:
-    containment_s_in_l: dict[int, float]
-    containment_l_in_s: dict[int, float]
-    containment_gap: dict[int, float]
+class CCAMetrics:
+    """CCA 分析の結果を格納するデータクラス。"""
+
+    # テストセットでの正準相関。shape: (n_components,)
+    canonical_correlations: np.ndarray
+    # 訓練セットでの正準相関（train/test ギャップ計算用）。shape: (n_components,)
+    canonical_correlations_train: np.ndarray
+    # r -> meanCCA@r = 上位 r 次元の平均相関
+    mean_cca: dict[int, float]
+    # r -> 上位 r 次元の二乗相関和
+    shared_score: dict[int, float]
+    # r -> 上位 r 次元の平均二乗相関
+    normalized_shared_score: dict[int, float]
+    # 訓練相関 - テスト相関。shape: (n_components,)
+    train_test_gap: np.ndarray
+    # merge 空間での CKA(Z_L_test, Z_S_test)
+    merge_cka: float
+    # merge 空間での RSA(Z_L_test, Z_S_test)
+    merge_rsa_spearman: float
+    # k -> merge 空間での mutual kNN 重なり率
+    merge_mutual_knn: dict[int, float]
+    # Regularized CCA を使用したかどうか
+    used_regularized: bool
+    # Large 側の ridge 正則化係数
+    lambda_L: float
+    # Small 側の ridge 正則化係数
+    lambda_S: float
+    # 実際に使用した正準成分数
+    n_components: int
 
 
-def compute_subspace_metrics(
+def compute_cca_metrics(
     F_L: np.ndarray,
     F_S: np.ndarray,
-    n_components_list: list[int] = (16, 32, 64, 128),
-) -> SubspaceMetrics:
-    F_L_c = _center(F_L)
-    F_S_c = _center(F_S)
+    n_components: int = 16,
+    r_values: list[int] = (4, 8, 16),
+    knn_ks: list[int] = (5, 10, 20),
+    test_size: float = 0.2,
+    random_state: int = 42,
+    use_regularized: bool | None = None,   # None = 自動検出
+    lambda_L: float = 1e-3,
+    lambda_S: float = 1e-3,
+    standardize: bool = True,
+) -> CCAMetrics:
+    """CCA / Regularized CCA を用いて共通 merge 空間の分析指標を計算する。
 
-    same_dim = F_L.shape[1] == F_S.shape[1]
+    アルゴリズム概要:
+      1. train/test 分割と中心化（標準化）
+      2. 訓練セットで共分散行列を計算する
+      3. Regularized CCA の場合は ridge 正則化を加える
+      4. SVD により正準方向と訓練相関を求める
+      5. テストセットに射影して正準相関を評価する
+      6. meanCCA・sharedScore・normalizedSharedScore を計算する
+      7. merge 空間の幾何指標（CKA・RSA・kNN）を計算する
 
-    V_L_full = _top_components(F_L_c, max(n_components_list))
-    V_S_full = _top_components(F_S_c, max(n_components_list))
+    自動検出ルール: n_train < d_L または n_train < d_S のとき Regularized CCA を使用する。
+    """
+    # Step 1: train/test 分割
+    idx = np.arange(F_L.shape[0])
+    idx_train, idx_test = train_test_split(idx, test_size=test_size, random_state=random_state)
 
-    containment_s_in_l = {}
-    containment_l_in_s = {}
-    containment_gap = {}
+    F_L_train_raw, F_L_test_raw = F_L[idx_train], F_L[idx_test]
+    F_S_train_raw, F_S_test_raw = F_S[idx_train], F_S[idx_test]
 
-    for r in n_components_list:
-        if same_dim:
-            # 共通環境空間での直接射影
-            r_eff = min(r, V_L_full.shape[1], V_S_full.shape[1])
-            V_L = V_L_full[:, :r_eff]
-            V_S = V_S_full[:, :r_eff]
-            c_s_in_l = _subspace_containment(V_S, V_L)
-            c_l_in_s = _subspace_containment(V_L, V_S)
-        else:
-            # 次元が異なる場合: データを介した R² で包含度を代替測定する
-            r_eff = min(r, V_L_full.shape[1], V_S_full.shape[1])
-            V_L = V_L_full[:, :r_eff]
-            V_S = V_S_full[:, :r_eff]
-            scores_S = F_S_c @ V_S
-            scores_L = F_L_c @ V_L
-            c_s_in_l = _regression_r2(F_L_c, scores_S)
-            c_l_in_s = _regression_r2(F_S_c, scores_L)
+    n_train = F_L_train_raw.shape[0]
+    d_L = F_L.shape[1]
+    d_S = F_S.shape[1]
 
-        containment_s_in_l[r] = c_s_in_l
-        containment_l_in_s[r] = c_l_in_s
-        containment_gap[r] = c_s_in_l - c_l_in_s
+    # 自動検出: n_train < d_L または n_train < d_S のとき Regularized CCA を使用する
+    if use_regularized is None:
+        use_regularized = (n_train < d_L) or (n_train < d_S)
 
-    return SubspaceMetrics(
-        containment_s_in_l=containment_s_in_l,
-        containment_l_in_s=containment_l_in_s,
-        containment_gap=containment_gap,
+    # n_components の上限クリップ
+    n_components_eff = min(n_components, d_L, d_S, n_train - 1)
+    if n_components_eff < 1:
+        n_components_eff = 1
+
+    # 訓練セットで統計量を計算してテストセットにも同じ変換を適用する
+    F_L_train, F_L_test = _cca_standardize(F_L_train_raw, F_L_test_raw, standardize)
+    F_S_train, F_S_test = _cca_standardize(F_S_train_raw, F_S_test_raw, standardize)
+
+    # Step 2: 訓練セットで共分散行列を計算する
+    denom = n_train - 1
+    Sigma_LL = (F_L_train.T @ F_L_train) / denom
+    Sigma_SS = (F_S_train.T @ F_S_train) / denom
+    Sigma_LS = (F_L_train.T @ F_S_train) / denom
+
+    # Step 3: Regularized CCA の場合は ridge を加算する
+    if use_regularized:
+        Sigma_LL_reg = Sigma_LL + lambda_L * np.eye(d_L)
+        Sigma_SS_reg = Sigma_SS + lambda_S * np.eye(d_S)
+    else:
+        Sigma_LL_reg = Sigma_LL
+        Sigma_SS_reg = Sigma_SS
+
+    # Step 4: SVD による CCA の解法（数値的に安定）
+    SLL_inv_sqrt = _matrix_sqrt_inv(Sigma_LL_reg)
+    SSS_inv_sqrt = _matrix_sqrt_inv(Sigma_SS_reg)
+    M = SLL_inv_sqrt @ Sigma_LS @ SSS_inv_sqrt  # shape: (d_L, d_S)
+
+    U, s_train, Vt = np.linalg.svd(M, full_matrices=False)
+    U = U[:, :n_components_eff]
+    s_train = s_train[:n_components_eff]
+    Vt = Vt[:n_components_eff, :]
+    s_train = np.clip(s_train, -1.0, 1.0)
+
+    # 正準方向（投影行列）を計算する
+    W_L = SLL_inv_sqrt @ U          # shape: (d_L, n_components_eff)
+    W_S = SSS_inv_sqrt @ Vt.T       # shape: (d_S, n_components_eff)
+
+    # Step 5: テストセットへの射影
+    Z_L_test = F_L_test @ W_L       # shape: (n_test, n_components_eff)
+    Z_S_test = F_S_test @ W_S       # shape: (n_test, n_components_eff)
+
+    # Step 6: テストセットでの正準相関を Pearson r で計算する
+    s_test = np.array([
+        _pearson_r_1d(Z_L_test[:, i], Z_S_test[:, i])
+        for i in range(n_components_eff)
+    ])
+    s_test = np.clip(s_test, -1.0, 1.0)
+
+    # Step 7: 派生指標を計算する
+    mean_cca_dict = _cca_mean(s_test, r_values)
+    shared_score_dict = _cca_shared(s_test, r_values)
+    norm_shared_dict = _cca_norm_shared(s_test, r_values)
+    train_test_gap = s_train - s_test
+
+    # merge 空間での幾何指標を計算する
+    merge_cka = compute_cka(Z_L_test, Z_S_test)
+    merge_rsa = compute_rsa(Z_L_test, Z_S_test)
+
+    n_test = Z_L_test.shape[0]
+    safe_ks = [k for k in knn_ks if k < n_test]
+    merge_mutual_knn_dict = {k: compute_mutual_knn(Z_L_test, Z_S_test, k) for k in safe_ks}
+
+    return CCAMetrics(
+        canonical_correlations=s_test,
+        canonical_correlations_train=s_train,
+        mean_cca=mean_cca_dict,
+        shared_score=shared_score_dict,
+        normalized_shared_score=norm_shared_dict,
+        train_test_gap=train_test_gap,
+        merge_cka=merge_cka,
+        merge_rsa_spearman=merge_rsa,
+        merge_mutual_knn=merge_mutual_knn_dict,
+        used_regularized=use_regularized,
+        lambda_L=lambda_L if use_regularized else 0.0,
+        lambda_S=lambda_S if use_regularized else 0.0,
+        n_components=n_components_eff,
     )
 
 
-def _regression_r2(X: np.ndarray, Y: np.ndarray) -> float:
-    """X の線形関数で Y の分散をどれだけ説明できるかを in-sample R² で測る。
+def _matrix_sqrt_inv(A: np.ndarray) -> np.ndarray:
+    """対称正定値行列 A の逆平方根 A^{-1/2} を SVD で計算する。
 
-    なぜここでは in-sample R² を使うか:
-      サブスペース包含は汎化特性ではなく幾何的特性を問うている。
-      PCA スコアのターゲットは構成上単位分散を持つため、
-      in-sample R² が包含度の tight な代理指標となる。
+    特異値を 1e-10 でクリップして特異に近い行列でも安定動作させる。
     """
-    reg = LinearRegression(fit_intercept=False)
-    reg.fit(X, Y)
-    Y_pred = reg.predict(X)
-    ss_res = np.sum((Y - Y_pred) ** 2)
-    ss_tot = np.sum((Y - Y.mean(axis=0)) ** 2)
-    if ss_tot == 0:
+    U, s, Vt = np.linalg.svd(A, full_matrices=False)
+    s_clipped = np.maximum(s, 1e-10)
+    s_inv_sqrt = 1.0 / np.sqrt(s_clipped)
+    return U @ np.diag(s_inv_sqrt) @ Vt
+
+
+def _cca_standardize(
+    F_train: np.ndarray,
+    F_test: np.ndarray,
+    standardize: bool,
+) -> tuple[np.ndarray, np.ndarray]:
+    """訓練セットで統計量を計算し、訓練・テスト双方を変換する。
+
+    standardize=True のとき各次元を平均 0・標準偏差 1 に正規化する。
+    standardize=False のとき中心化のみ行う。
+    """
+    mean = F_train.mean(axis=0)
+    F_train_c = F_train - mean
+    F_test_c = F_test - mean
+
+    if standardize:
+        std = F_train_c.std(axis=0)
+        std = np.maximum(std, 1e-8)
+        F_train_c = F_train_c / std
+        F_test_c = F_test_c / std
+
+    return F_train_c, F_test_c
+
+
+def _pearson_r_1d(x: np.ndarray, y: np.ndarray) -> float:
+    """1次元ベクトル x と y の Pearson 相関係数を計算する。
+
+    標準偏差がほぼ 0 の縮退ケースでは 0 を返す。
+    """
+    x_c = x - x.mean()
+    y_c = y - y.mean()
+    denom = np.sqrt((x_c ** 2).sum() * (y_c ** 2).sum())
+    if denom < 1e-10:
         return 0.0
-    return float(max(0.0, 1.0 - ss_res / ss_tot))
+    return float(np.dot(x_c, y_c) / denom)
 
 
-def _center(F: np.ndarray) -> np.ndarray:
-    return F - F.mean(axis=0)
+def _cca_mean(corr: np.ndarray, r_values: list[int]) -> dict[int, float]:
+    """上位 r 次元の平均正準相関 meanCCA@r を計算する。"""
+    result = {}
+    for r in r_values:
+        r_eff = min(r, len(corr))
+        result[r] = float(corr[:r_eff].mean()) if r_eff > 0 else 0.0
+    return result
 
 
-def _top_components(F_centered: np.ndarray, r: int) -> np.ndarray:
-    """SVD で上位 r 右特異ベクトルを抽出する。
-
-    なぜ共分散行列ではなく SVD を使うか:
-      高次元特徴量で共分散行列を明示的に計算すると数値的に不安定になる。
-    戻り値の shape: (d, r)
-    """
-    r_eff = min(r, min(F_centered.shape))
-    _, _, Vt = np.linalg.svd(F_centered, full_matrices=False)
-    return Vt[:r_eff].T  # shape: (d, r_eff)
+def _cca_shared(corr: np.ndarray, r_values: list[int]) -> dict[int, float]:
+    """上位 r 次元の二乗相関和 sharedScore@r を計算する。"""
+    result = {}
+    for r in r_values:
+        r_eff = min(r, len(corr))
+        result[r] = float((corr[:r_eff] ** 2).sum()) if r_eff > 0 else 0.0
+    return result
 
 
-def _subspace_containment(V_query: np.ndarray, V_base: np.ndarray) -> float:
-    """V_query の列空間が V_base の列空間にどれだけ含まれるかを測る。
-
-    計算式: ||P_{V_base} V_query||_F^2 / ||V_query||_F^2
-
-    なぜ Frobenius ノルムで測るか:
-      射影の Frobenius ノルムは、V_query の「エネルギー」のうち
-      V_base の方向で説明できる割合を定量化する。1 = 完全包含、0 = 直交。
-
-    前提: V_base の列は SVD により正規直交である。
-    """
-    proj = V_base @ (V_base.T @ V_query)
-    numerator = float(np.linalg.norm(proj, "fro") ** 2)
-    denominator = float(np.linalg.norm(V_query, "fro") ** 2)
-    if denominator == 0:
-        return 0.0
-    return numerator / denominator
+def _cca_norm_shared(corr: np.ndarray, r_values: list[int]) -> dict[int, float]:
+    """上位 r 次元の平均二乗相関 normalizedSharedScore@r を計算する。"""
+    result = {}
+    for r in r_values:
+        r_eff = min(r, len(corr))
+        result[r] = float((corr[:r_eff] ** 2).mean()) if r_eff > 0 else 0.0
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -482,7 +613,7 @@ def generate_report(
     cfg: dict,
     linear: LinearMetrics,
     geometry: GeometricMetrics,
-    subspace: SubspaceMetrics,
+    cca: CCAMetrics,
     n_samples: int,
     d_L: int,
     d_S: int,
@@ -496,6 +627,7 @@ def generate_report(
     lines = []
     exp = cfg.get("experiment", {})
 
+    # 1. ヘッダー
     lines += [
         "# Representation Subsumption 分析レポート",
         "",
@@ -504,6 +636,10 @@ def generate_report(
         f"**Large モデル**: `{exp.get('large_model', 'N/A')}`",
         f"**Small モデル**: `{exp.get('small_model', 'N/A')}`",
         "",
+    ]
+
+    # 2. データセット
+    lines += [
         "## データセット",
         "",
         "| 項目 | 値 |",
@@ -514,6 +650,7 @@ def generate_report(
         "",
     ]
 
+    # 3. 線形包含
     lines += [
         "## 線形包含",
         "",
@@ -527,6 +664,7 @@ def generate_report(
         "",
     ]
 
+    # 4. 幾何的整合
     lines += [
         "## 幾何的整合",
         "",
@@ -539,21 +677,76 @@ def generate_report(
         lines.append(f"| mutual_kNN@{k} | {v:.4f} |")
     lines.append("")
 
+    # 5. CCA / Regularized CCA
+    cca_method = "Regularized CCA" if cca.used_regularized else "標準 CCA"
     lines += [
-        "## 部分空間包含",
+        "## CCA / Regularized CCA",
         "",
-        "| r | S_in_L | L_in_S | Gap (S_in_L − L_in_S) |",
-        "|---|--------|--------|------------------------|",
+        f"**手法**: {cca_method}  ",
+        f"**正準成分数**: {cca.n_components}  ",
     ]
-    for r in sorted(subspace.containment_s_in_l):
-        s_in_l = subspace.containment_s_in_l[r]
-        l_in_s = subspace.containment_l_in_s[r]
-        gap = subspace.containment_gap[r]
-        lines.append(f"| {r} | {s_in_l:.4f} | {l_in_s:.4f} | {gap:.4f} |")
+    if cca.used_regularized:
+        lines += [f"**λ_L**: {cca.lambda_L}  ", f"**λ_S**: {cca.lambda_S}  "]
     lines.append("")
 
-    lines += _interpretation_block(linear, geometry, subspace)
+    # 正準相関テーブル（上位 min(n_components, 8) 成分を表示する）
+    n_show = min(cca.n_components, 8)
+    lines += [
+        "### 正準相関（テストセット）",
+        "",
+        "| 成分 | 正準相関 ρ |",
+        "|------|-----------|",
+    ]
+    for i in range(n_show):
+        lines.append(f"| {i + 1} | {cca.canonical_correlations[i]:.4f} |")
+    if cca.n_components > n_show:
+        lines.append(f"| ... | （{cca.n_components - n_show} 成分省略）|")
+    lines.append("")
 
+    # 集約指標テーブル
+    _r_fmt = lambda d, r: f"{d.get(r, float('nan')):.4f}" if r in d else "N/A"
+    lines += [
+        "### 集約指標",
+        "",
+        "| 指標 | r=4 | r=8 | r=16 |",
+        "|------|-----|-----|------|",
+        f"| meanCCA@r | {_r_fmt(cca.mean_cca, 4)} | {_r_fmt(cca.mean_cca, 8)} | {_r_fmt(cca.mean_cca, 16)} |",
+        f"| sharedScore@r | {_r_fmt(cca.shared_score, 4)} | {_r_fmt(cca.shared_score, 8)} | {_r_fmt(cca.shared_score, 16)} |",
+        f"| normalizedSharedScore@r | {_r_fmt(cca.normalized_shared_score, 4)} | {_r_fmt(cca.normalized_shared_score, 8)} | {_r_fmt(cca.normalized_shared_score, 16)} |",
+        "",
+    ]
+
+    # 6. Merge 空間幾何
+    lines += [
+        "## Merge 空間幾何（Z_L vs Z_S）",
+        "",
+        "| 指標 | 値 |",
+        "|------|---|",
+        f"| CKA (merge) | {cca.merge_cka:.4f} |",
+        f"| RSA Spearman ρ (merge) | {cca.merge_rsa_spearman:.4f} |",
+    ]
+    for k, v in sorted(cca.merge_mutual_knn.items()):
+        lines.append(f"| mutual_kNN@{k} (merge) | {v:.4f} |")
+    lines.append("")
+
+    # 7. Train/Test Gap
+    lines += [
+        "## Train/Test Gap（過学習チェック）",
+        "",
+        "| 成分 | 訓練 ρ | テスト ρ | Gap |",
+        "|------|--------|---------|-----|",
+    ]
+    for i in range(n_show):
+        rho_train = cca.canonical_correlations_train[i]
+        rho_test = cca.canonical_correlations[i]
+        gap = cca.train_test_gap[i]
+        lines.append(f"| {i + 1} | {rho_train:.4f} | {rho_test:.4f} | {gap:.4f} |")
+    lines.append("")
+
+    # 8. 主要な観察
+    lines += _interpretation_block_inline(linear, geometry, cca)
+
+    # 9. 層ペア分析（オプション）
     if layer_results:
         lines += _layer_results_section(layer_results)
 
@@ -565,13 +758,15 @@ def generate_report(
     return report
 
 
-def _interpretation_block(
+def _interpretation_block_inline(
     linear: LinearMetrics,
     geometry: GeometricMetrics,
-    subspace: SubspaceMetrics,
+    cca: CCAMetrics,
 ) -> list[str]:
+    """各指標の値を自動解釈して観察コメントを生成する。"""
     lines = ["## 主要な観察", ""]
 
+    # 線形包含の解釈
     if linear.r2_l_to_s > 0.9 and linear.r2_s_to_l < 0.5:
         obs = "Large が Small を線形的に包含しています（R²_L→S が高く R²_S→L が低い）。"
     elif linear.r2_l_to_s > 0.8 and linear.r2_s_to_l > 0.8:
@@ -582,6 +777,7 @@ def _interpretation_block(
         obs = "R²_L→S が低い: Small には Large から線形説明できない成分があります。"
     lines += [f"- **線形**: {obs}"]
 
+    # 幾何的整合の解釈
     if geometry.cka > 0.9:
         lines += ["- **CKA**: 非常に高い — 表現は幾何的に類似しています。"]
     elif geometry.cka > 0.6:
@@ -589,20 +785,39 @@ def _interpretation_block(
     else:
         lines += ["- **CKA**: 低い — 表現の幾何構造が異なります。"]
 
-    max_r = max(subspace.containment_s_in_l)
-    c_s_in_l = subspace.containment_s_in_l[max_r]
-    if c_s_in_l > 0.9:
-        lines += [f"- **部分空間 (r={max_r})**: Small の主方向は Large の空間によく含まれています。"]
-    elif c_s_in_l > 0.6:
-        lines += [f"- **部分空間 (r={max_r})**: Small の Large への部分的な包含があります。"]
+    # CCA の解釈
+    r_values_available = sorted(cca.mean_cca.keys())
+    if r_values_available:
+        max_r = r_values_available[-1]
+        mean_corr = cca.mean_cca[max_r]
+        if mean_corr > 0.8:
+            lines += [f"- **CCA (r={max_r})**: 非常に高い平均正準相関 — 強い共有潜在構造があります。"]
+        elif mean_corr > 0.5:
+            lines += [f"- **CCA (r={max_r})**: 中程度の平均正準相関 — 部分的な共有構造があります。"]
+        else:
+            lines += [f"- **CCA (r={max_r})**: 低い平均正準相関 — 共有潜在構造が少ない可能性があります。"]
+
+    # Merge 空間の解釈
+    if cca.merge_cka > 0.8:
+        lines += ["- **Merge 空間 CKA**: 高い — CCA 写像後の表現は非常に類似しています。"]
+    elif cca.merge_cka > 0.5:
+        lines += ["- **Merge 空間 CKA**: 中程度 — CCA 写像後に一定の類似構造があります。"]
     else:
-        lines += [f"- **部分空間 (r={max_r})**: Small には Large の部分空間外の主方向が存在します。"]
+        lines += ["- **Merge 空間 CKA**: 低い — CCA 写像後も表現構造が異なります。"]
+
+    # Train/Test Gap の解釈
+    mean_gap = float(cca.train_test_gap.mean())
+    if mean_gap > 0.2:
+        lines += [f"- **Train/Test Gap が大きい** (平均 {mean_gap:.3f}): 過学習の可能性があります。λ を大きくすることを検討してください。"]
+    else:
+        lines += [f"- **Train/Test Gap**: 小さい (平均 {mean_gap:.3f}) — 正準相関の推定が安定しています。"]
 
     lines.append("")
     return lines
 
 
 def _layer_results_section(layer_results: list[dict]) -> list[str]:
+    """層ペア分析結果のテーブルセクションを生成する。"""
     lines = ["## 層ペア分析", ""]
     lines += ["| Large 層 | Small 層 | R²_L→S | R²_S→L | CKA | RSA | kNN@10 |"]
     lines += ["|----------|----------|--------|--------|-----|-----|--------|"]
@@ -622,7 +837,12 @@ def _layer_results_section(layer_results: list[dict]) -> list[str]:
 # ---------------------------------------------------------------------------
 
 
-def make_figures(linear: LinearMetrics, geometry: GeometricMetrics, subspace: SubspaceMetrics, figs_dir: str) -> None:
+def make_figures(
+    linear: LinearMetrics,
+    geometry: GeometricMetrics,
+    cca: CCAMetrics,
+    figs_dir: str,
+) -> None:
     """分析図を生成して保存する。matplotlib が必要。"""
     import matplotlib.pyplot as plt
     out = Path(figs_dir)
@@ -641,33 +861,73 @@ def make_figures(linear: LinearMetrics, geometry: GeometricMetrics, subspace: Su
     fig.savefig(out / "linear_directional_gap.png", dpi=150)
     plt.close(fig)
 
-    # 部分空間包含の折れ線グラフ
-    rs = sorted(subspace.containment_s_in_l)
-    s_in_l = [subspace.containment_s_in_l[r] for r in rs]
-    l_in_s = [subspace.containment_l_in_s[r] for r in rs]
-    fig, ax = plt.subplots(figsize=(6, 4))
-    ax.plot(rs, s_in_l, marker="o", label="Small in Large")
-    ax.plot(rs, l_in_s, marker="s", label="Large in Small")
-    ax.set_xlabel("r（主成分数）")
-    ax.set_ylabel("包含度")
-    ax.set_title("部分空間包含度 vs. r")
-    ax.legend()
+    # 正準相関スペクトルの棒グラフ（訓練 vs テスト）
+    n_show = min(cca.n_components, 16)
+    x = np.arange(n_show)
+    width = 0.35
+    rho_train = cca.canonical_correlations_train[:n_show]
+    rho_test = cca.canonical_correlations[:n_show]
+    fig, ax = plt.subplots(figsize=(max(6, n_show * 0.5 + 1), 4))
+    ax.bar(x - width / 2, rho_train, width, label="訓練", color="steelblue", alpha=0.8)
+    ax.bar(x + width / 2, rho_test, width, label="テスト", color="salmon", alpha=0.8)
+    ax.set_xticks(x)
+    ax.set_xticklabels([str(i + 1) for i in range(n_show)])
+    ax.set_xlabel("正準成分")
+    ax.set_ylabel("正準相関 ρ")
+    ax.set_title("正準相関スペクトル（訓練 vs テスト）")
     ax.set_ylim(0, 1.05)
+    ax.legend()
     fig.tight_layout()
-    fig.savefig(out / "subspace_containment.png", dpi=150)
+    fig.savefig(out / "canonical_correlations.png", dpi=150)
     plt.close(fig)
 
-    # mutual kNN の折れ線グラフ
+    # 累積 sharedScore カーブ
+    r_vals = sorted(cca.shared_score.keys())
+    ss_vals = [cca.shared_score[r] for r in r_vals]
+    nss_vals = [cca.normalized_shared_score[r] for r in r_vals]
+    fig, ax = plt.subplots(figsize=(6, 4))
+    ax.plot(r_vals, ss_vals, marker="o", label="sharedScore@r", color="steelblue")
+    ax.plot(r_vals, nss_vals, marker="s", label="normalizedSharedScore@r", color="darkorchid")
+    ax.set_xlabel("r（上位成分数）")
+    ax.set_ylabel("スコア")
+    ax.set_title("累積 Shared Score vs. r")
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(out / "shared_score.png", dpi=150)
+    plt.close(fig)
+
+    # mutual kNN の折れ線グラフ（元空間 vs merge 空間）
     ks = sorted(geometry.mutual_knn)
     knn_vals = [geometry.mutual_knn[k] for k in ks]
+    merge_knn_vals = [cca.merge_mutual_knn.get(k, float("nan")) for k in ks]
     fig, ax = plt.subplots(figsize=(5, 4))
-    ax.plot(ks, knn_vals, marker="o", color="darkorchid")
+    ax.plot(ks, knn_vals, marker="o", color="darkorchid", label="元空間")
+    ax.plot(ks, merge_knn_vals, marker="s", color="teal", label="merge 空間")
     ax.set_xlabel("k")
     ax.set_ylabel("mutual kNN 重なり率")
     ax.set_title("Mutual kNN 重なり率 vs. k")
     ax.set_ylim(0, 1.05)
+    ax.legend()
     fig.tight_layout()
     fig.savefig(out / "mutual_knn.png", dpi=150)
+    plt.close(fig)
+
+    # 訓練 vs テスト正準相関の散布図（過学習の可視化）
+    fig, ax = plt.subplots(figsize=(5, 5))
+    ax.scatter(
+        cca.canonical_correlations_train,
+        cca.canonical_correlations,
+        alpha=0.7, color="steelblue", edgecolors="black", linewidths=0.5,
+    )
+    ax.plot([0, 1], [0, 1], "k--", linewidth=0.8, label="y = x")
+    ax.set_xlabel("訓練セット 正準相関 ρ")
+    ax.set_ylabel("テストセット 正準相関 ρ")
+    ax.set_title("Train vs Test 正準相関")
+    ax.set_xlim(0, 1.05)
+    ax.set_ylim(0, 1.05)
+    ax.legend()
+    fig.tight_layout()
+    fig.savefig(out / "train_vs_test_cca.png", dpi=150)
     plt.close(fig)
 
     logger.info(f"図を保存しました: {out}")
@@ -688,11 +948,16 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--small-model", default="small", help="Small モデルの名前ラベル")
     p.add_argument("--output-dir", default="results", help="結果出力のルートディレクトリ")
     p.add_argument("--knn-k", nargs="+", type=int, default=[5, 10, 20], help="mutual kNN の k 値リスト")
-    p.add_argument("--n-components", nargs="+", type=int, default=[16, 32, 64, 128],
-                   help="部分空間分析の PCA 主成分数リスト")
-    p.add_argument("--test-size", type=float, default=0.2, help="線形指標の train/test 分割比率")
+    p.add_argument("--n-components", type=int, default=16, help="CCA の正準成分数")
+    p.add_argument("--r-values", nargs="+", type=int, default=[4, 8, 16],
+                   help="meanCCA・sharedScore を計算する r 値リスト")
+    p.add_argument("--test-size", type=float, default=0.2, help="線形・CCA 指標の train/test 分割比率")
     p.add_argument("--ridge", action="store_true", help="OLS の代わりに Ridge 回帰を使用する")
     p.add_argument("--ridge-alpha", type=float, default=1.0, help="Ridge の正則化強度")
+    p.add_argument("--lambda-l", type=float, default=1e-3, help="Regularized CCA の Large 側 λ")
+    p.add_argument("--lambda-s", type=float, default=1e-3, help="Regularized CCA の Small 側 λ")
+    p.add_argument("--regularized", action="store_true", help="Regularized CCA を強制使用する")
+    p.add_argument("--no-standardize", action="store_true", help="CCA の標準化をスキップして中心化のみ行う")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--debug", action="store_true")
     p.add_argument("--figures", action="store_true", help="図を生成する（matplotlib が必要）")
@@ -709,6 +974,7 @@ def main() -> None:
     reports_dir = str(Path(args.output_dir) / "reports")
     ensure_dirs(figures_dir, tables_dir, reports_dir)
 
+    # 特徴量の読み込みとアライメント
     large_feat = load_features(args.large, model_name=args.large_model)
     small_feat = load_features(args.small, model_name=args.small_model)
 
@@ -717,6 +983,7 @@ def main() -> None:
     d_S = F_S.shape[1]
     logger.info(f"分析対象: n={n_samples}, d_L={d_L}, d_S={d_S}")
 
+    # 線形包含指標の計算
     linear = compute_linear_metrics(
         F_L, F_S,
         test_size=args.test_size,
@@ -726,11 +993,28 @@ def main() -> None:
     )
     logger.info(f"線形: R²_L→S={linear.r2_l_to_s:.4f}, R²_S→L={linear.r2_s_to_l:.4f}, gap={linear.directional_gap:.4f}")
 
+    # 幾何的整合指標の計算
     geometry = compute_geometric_metrics(F_L, F_S, knn_ks=args.knn_k)
     logger.info(f"幾何: CKA={geometry.cka:.4f}, RSA={geometry.rsa_spearman:.4f}")
 
-    subspace = compute_subspace_metrics(F_L, F_S, n_components_list=args.n_components)
+    # CCA / Regularized CCA 指標の計算
+    use_reg = True if args.regularized else None  # None = 自動検出
+    cca = compute_cca_metrics(
+        F_L, F_S,
+        n_components=args.n_components,
+        r_values=args.r_values,
+        knn_ks=args.knn_k,
+        test_size=args.test_size,
+        random_state=args.seed,
+        use_regularized=use_reg,
+        lambda_L=args.lambda_l,
+        lambda_S=args.lambda_s,
+        standardize=not args.no_standardize,
+    )
+    method = "Regularized CCA" if cca.used_regularized else "標準 CCA"
+    logger.info(f"CCA ({method}): n_components={cca.n_components}")
 
+    # レポートの生成
     cfg = {
         "experiment": {
             "name": "run_single_file",
@@ -743,7 +1027,7 @@ def main() -> None:
         cfg=cfg,
         linear=linear,
         geometry=geometry,
-        subspace=subspace,
+        cca=cca,
         n_samples=n_samples,
         d_L=d_L,
         d_S=d_S,
@@ -753,9 +1037,10 @@ def main() -> None:
     print(report)
     logger.info(f"レポートを出力しました: {report_path}")
 
+    # 図の生成（matplotlib がない場合はスキップする）
     if args.figures:
         try:
-            make_figures(linear, geometry, subspace, figures_dir)
+            make_figures(linear, geometry, cca, figures_dir)
         except ImportError:
             logger.warning("matplotlib が見つかりません。図の生成をスキップします。")
 
