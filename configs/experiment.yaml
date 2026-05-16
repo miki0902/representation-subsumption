@@ -1,0 +1,29 @@
+experiment:
+  name: "representation_subsumption_analysis"
+  large_model: "large_model"
+  small_model: "small_model"
+
+features:
+  large_path: "features/large_features.pt"
+  small_path: "features/small_features.pt"
+  # Optional: layer-wise features (list of paths)
+  large_layers: []
+  small_layers: []
+
+linear:
+  test_size: 0.2
+  random_state: 42
+  ridge_alpha: 1.0
+  use_ridge: false
+
+geometry:
+  knn_k: [5, 10, 20]
+
+subspace:
+  n_components: [16, 32, 64, 128]
+
+output:
+  results_dir: "results"
+  figures_dir: "results/figures"
+  tables_dir: "results/tables"
+  reports_dir: "results/reports"
