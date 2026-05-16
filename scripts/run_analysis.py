@@ -168,21 +168,22 @@ def _make_figures(linear, geometry, cca, out_cfg: dict) -> None:
     import matplotlib.pyplot as plt
     figs_dir = Path(out_cfg.get("figures_dir", "results/figures"))
 
-    # 方向性ギャップの棒グラフ
+    # Directional R² bar chart
     fig, ax = plt.subplots(figsize=(5, 4))
-    labels = ["R²_L→S", "R²_S→L", "Gap"]
+    labels = ["R2_L->S", "R2_S->L", "Gap"]
     values = [linear.r2_l_to_s, linear.r2_s_to_l, linear.directional_gap]
     colors = ["steelblue", "salmon", "mediumseagreen"]
     ax.bar(labels, values, color=colors)
-    ax.set_ylim(-1, 1)
+    y_margin = max(1.0, max(abs(v) for v in values) * 1.1)
+    ax.set_ylim(-y_margin, y_margin)
     ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
-    ax.set_title("線形包含: 方向性 R²")
-    ax.set_ylabel("R²")
+    ax.set_title("Linear Containment: Directional R2")
+    ax.set_ylabel("R2")
     fig.tight_layout()
     fig.savefig(figs_dir / "linear_directional_gap.png", dpi=150)
     plt.close(fig)
 
-    # 正準相関スペクトル（棒グラフ）— 旧: subspace_containment
+    # Canonical correlation spectrum bar chart (train vs test)
     n_show = min(cca.n_components, 16)
     components = list(range(1, n_show + 1))
     rho_train = cca.canonical_correlations_train[:n_show]
@@ -190,58 +191,58 @@ def _make_figures(linear, geometry, cca, out_cfg: dict) -> None:
     x = np.arange(n_show)
     width = 0.35
     fig, ax = plt.subplots(figsize=(max(6, n_show * 0.5 + 1), 4))
-    ax.bar(x - width / 2, rho_train, width, label="訓練", color="steelblue", alpha=0.8)
-    ax.bar(x + width / 2, rho_test, width, label="テスト", color="salmon", alpha=0.8)
+    ax.bar(x - width / 2, rho_train, width, label="Train", color="steelblue", alpha=0.8)
+    ax.bar(x + width / 2, rho_test, width, label="Test", color="salmon", alpha=0.8)
     ax.set_xticks(x)
     ax.set_xticklabels([str(c) for c in components])
-    ax.set_xlabel("正準成分")
-    ax.set_ylabel("正準相関 ρ")
-    ax.set_title("正準相関スペクトル（訓練 vs テスト）")
-    ax.set_ylim(0, 1.05)
+    ax.set_xlabel("Canonical Component")
+    ax.set_ylabel("Canonical Correlation rho")
+    ax.set_title("Canonical Correlation Spectrum (Train vs Test)")
+    ax.set_ylim(-1.05, 1.05)
     ax.legend()
     fig.tight_layout()
     fig.savefig(figs_dir / "canonical_correlations.png", dpi=150)
     plt.close(fig)
 
-    # 累積 sharedScore カーブ（sharedScore@r vs r）
+    # Cumulative shared score curve
     r_vals = sorted(cca.shared_score.keys())
     ss_vals = [cca.shared_score[r] for r in r_vals]
     nss_vals = [cca.normalized_shared_score[r] for r in r_vals]
     fig, ax = plt.subplots(figsize=(6, 4))
     ax.plot(r_vals, ss_vals, marker="o", label="sharedScore@r", color="steelblue")
     ax.plot(r_vals, nss_vals, marker="s", label="normalizedSharedScore@r", color="darkorchid")
-    ax.set_xlabel("r（上位成分数）")
-    ax.set_ylabel("スコア")
-    ax.set_title("累積 Shared Score vs. r")
+    ax.set_xlabel("r (top components)")
+    ax.set_ylabel("Score")
+    ax.set_title("Cumulative Shared Score vs. r")
     ax.legend()
     fig.tight_layout()
     fig.savefig(figs_dir / "shared_score.png", dpi=150)
     plt.close(fig)
 
-    # mutual kNN の折れ線グラフ
+    # Mutual kNN overlap (original space vs merge space)
     ks = sorted(geometry.mutual_knn)
     knn_vals = [geometry.mutual_knn[k] for k in ks]
     merge_knn_vals = [cca.merge_mutual_knn.get(k, float("nan")) for k in ks]
     fig, ax = plt.subplots(figsize=(5, 4))
-    ax.plot(ks, knn_vals, marker="o", color="darkorchid", label="元空間")
-    ax.plot(ks, merge_knn_vals, marker="s", color="teal", label="merge 空間")
+    ax.plot(ks, knn_vals, marker="o", color="darkorchid", label="Original Space")
+    ax.plot(ks, merge_knn_vals, marker="s", color="teal", label="Merge Space")
     ax.set_xlabel("k")
-    ax.set_ylabel("mutual kNN 重なり率")
-    ax.set_title("Mutual kNN 重なり率 vs. k")
+    ax.set_ylabel("Mutual kNN Overlap")
+    ax.set_title("Mutual kNN Overlap vs. k")
     ax.set_ylim(0, 1.05)
     ax.legend()
     fig.tight_layout()
     fig.savefig(figs_dir / "mutual_knn.png", dpi=150)
     plt.close(fig)
 
-    # 訓練 vs テスト正準相関の散布図
+    # Train vs Test canonical correlation scatter (overfitting check)
     fig, ax = plt.subplots(figsize=(5, 5))
     ax.scatter(cca.canonical_correlations_train, cca.canonical_correlations,
                alpha=0.7, color="steelblue", edgecolors="black", linewidths=0.5)
     ax.plot([0, 1], [0, 1], "k--", linewidth=0.8, label="y = x")
-    ax.set_xlabel("訓練セット 正準相関 ρ")
-    ax.set_ylabel("テストセット 正準相関 ρ")
-    ax.set_title("Train vs Test 正準相関")
+    ax.set_xlabel("Train Canonical Correlation rho")
+    ax.set_ylabel("Test Canonical Correlation rho")
+    ax.set_title("Train vs Test Canonical Correlation")
     ax.set_xlim(0, 1.05)
     ax.set_ylim(0, 1.05)
     ax.legend()

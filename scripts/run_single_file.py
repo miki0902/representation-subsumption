@@ -332,6 +332,8 @@ def compute_rsa(F_L: np.ndarray, F_S: np.ndarray) -> float:
     なぜ RSA を使うか:
       ペアワイズ距離のランク順構造を比較し、単調変換に頑健な幾何構造を捉える。
     """
+    if F_L.shape[0] < 3:
+        return float("nan")
     rdm_L = _upper_tri(euclidean_distances(F_L))
     rdm_S = _upper_tri(euclidean_distances(F_S))
     rho, _ = spearmanr(rdm_L, rdm_S)
@@ -703,27 +705,31 @@ def generate_report(
         lines.append(f"| ... | （{cca.n_components - n_show} 成分省略）|")
     lines.append("")
 
-    # 集約指標テーブル
-    _r_fmt = lambda d, r: f"{d.get(r, float('nan')):.4f}" if r in d else "N/A"
+    # 集約指標テーブル（実際の r_values に合わせて動的生成）
+    _r_keys = sorted(cca.mean_cca.keys())
+    _r_fmt = lambda d, r: f"{d[r]:.4f}"
+    _col_header = " | ".join(f"r={r}" for r in _r_keys)
+    _col_sep = "|------|" + "------|" * len(_r_keys)
     lines += [
         "### 集約指標",
         "",
-        "| 指標 | r=4 | r=8 | r=16 |",
-        "|------|-----|-----|------|",
-        f"| meanCCA@r | {_r_fmt(cca.mean_cca, 4)} | {_r_fmt(cca.mean_cca, 8)} | {_r_fmt(cca.mean_cca, 16)} |",
-        f"| sharedScore@r | {_r_fmt(cca.shared_score, 4)} | {_r_fmt(cca.shared_score, 8)} | {_r_fmt(cca.shared_score, 16)} |",
-        f"| normalizedSharedScore@r | {_r_fmt(cca.normalized_shared_score, 4)} | {_r_fmt(cca.normalized_shared_score, 8)} | {_r_fmt(cca.normalized_shared_score, 16)} |",
+        f"| 指標 | {_col_header} |",
+        _col_sep,
+        "| meanCCA@r | " + " | ".join(_r_fmt(cca.mean_cca, r) for r in _r_keys) + " |",
+        "| sharedScore@r | " + " | ".join(_r_fmt(cca.shared_score, r) for r in _r_keys) + " |",
+        "| normalizedSharedScore@r | " + " | ".join(_r_fmt(cca.normalized_shared_score, r) for r in _r_keys) + " |",
         "",
     ]
 
     # 6. Merge 空間幾何
+    _fmt_float = lambda v: f"{v:.4f}" if not (v != v) else "N/A (n_test<3)"  # nan check
     lines += [
         "## Merge 空間幾何（Z_L vs Z_S）",
         "",
         "| 指標 | 値 |",
         "|------|---|",
         f"| CKA (merge) | {cca.merge_cka:.4f} |",
-        f"| RSA Spearman ρ (merge) | {cca.merge_rsa_spearman:.4f} |",
+        f"| RSA Spearman ρ (merge) | {_fmt_float(cca.merge_rsa_spearman)} |",
     ]
     for k, v in sorted(cca.merge_mutual_knn.items()):
         lines.append(f"| mutual_kNN@{k} (merge) | {v:.4f} |")
@@ -847,72 +853,73 @@ def make_figures(
     import matplotlib.pyplot as plt
     out = Path(figs_dir)
 
-    # 方向性ギャップの棒グラフ
+    # Directional R² bar chart
     fig, ax = plt.subplots(figsize=(5, 4))
-    labels = ["R²_L→S", "R²_S→L", "Gap"]
+    labels = ["R2_L->S", "R2_S->L", "Gap"]
     values = [linear.r2_l_to_s, linear.r2_s_to_l, linear.directional_gap]
     colors = ["steelblue", "salmon", "mediumseagreen"]
     ax.bar(labels, values, color=colors)
-    ax.set_ylim(-1, 1)
+    y_margin = max(1.0, max(abs(v) for v in values) * 1.1)
+    ax.set_ylim(-y_margin, y_margin)
     ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
-    ax.set_title("線形包含: 方向性 R²")
-    ax.set_ylabel("R²")
+    ax.set_title("Linear Containment: Directional R2")
+    ax.set_ylabel("R2")
     fig.tight_layout()
     fig.savefig(out / "linear_directional_gap.png", dpi=150)
     plt.close(fig)
 
-    # 正準相関スペクトルの棒グラフ（訓練 vs テスト）
+    # Canonical correlation spectrum bar chart (train vs test)
     n_show = min(cca.n_components, 16)
     x = np.arange(n_show)
     width = 0.35
     rho_train = cca.canonical_correlations_train[:n_show]
     rho_test = cca.canonical_correlations[:n_show]
     fig, ax = plt.subplots(figsize=(max(6, n_show * 0.5 + 1), 4))
-    ax.bar(x - width / 2, rho_train, width, label="訓練", color="steelblue", alpha=0.8)
-    ax.bar(x + width / 2, rho_test, width, label="テスト", color="salmon", alpha=0.8)
+    ax.bar(x - width / 2, rho_train, width, label="Train", color="steelblue", alpha=0.8)
+    ax.bar(x + width / 2, rho_test, width, label="Test", color="salmon", alpha=0.8)
     ax.set_xticks(x)
     ax.set_xticklabels([str(i + 1) for i in range(n_show)])
-    ax.set_xlabel("正準成分")
-    ax.set_ylabel("正準相関 ρ")
-    ax.set_title("正準相関スペクトル（訓練 vs テスト）")
-    ax.set_ylim(0, 1.05)
+    ax.set_xlabel("Canonical Component")
+    ax.set_ylabel("Canonical Correlation rho")
+    ax.set_title("Canonical Correlation Spectrum (Train vs Test)")
+    ax.set_ylim(-1.05, 1.05)
     ax.legend()
     fig.tight_layout()
     fig.savefig(out / "canonical_correlations.png", dpi=150)
     plt.close(fig)
 
-    # 累積 sharedScore カーブ
+    # Cumulative shared score curve
     r_vals = sorted(cca.shared_score.keys())
     ss_vals = [cca.shared_score[r] for r in r_vals]
     nss_vals = [cca.normalized_shared_score[r] for r in r_vals]
     fig, ax = plt.subplots(figsize=(6, 4))
     ax.plot(r_vals, ss_vals, marker="o", label="sharedScore@r", color="steelblue")
     ax.plot(r_vals, nss_vals, marker="s", label="normalizedSharedScore@r", color="darkorchid")
-    ax.set_xlabel("r（上位成分数）")
-    ax.set_ylabel("スコア")
-    ax.set_title("累積 Shared Score vs. r")
+    ax.set_xlabel("r (top components)")
+    ax.set_ylabel("Score")
+    ax.set_title("Cumulative Shared Score vs. r")
     ax.legend()
     fig.tight_layout()
     fig.savefig(out / "shared_score.png", dpi=150)
     plt.close(fig)
 
-    # mutual kNN の折れ線グラフ（元空間 vs merge 空間）
+    # Mutual kNN overlap (original space vs merge space)
     ks = sorted(geometry.mutual_knn)
     knn_vals = [geometry.mutual_knn[k] for k in ks]
     merge_knn_vals = [cca.merge_mutual_knn.get(k, float("nan")) for k in ks]
     fig, ax = plt.subplots(figsize=(5, 4))
-    ax.plot(ks, knn_vals, marker="o", color="darkorchid", label="元空間")
-    ax.plot(ks, merge_knn_vals, marker="s", color="teal", label="merge 空間")
+    ax.plot(ks, knn_vals, marker="o", color="darkorchid", label="Original Space")
+    ax.plot(ks, merge_knn_vals, marker="s", color="teal", label="Merge Space")
     ax.set_xlabel("k")
-    ax.set_ylabel("mutual kNN 重なり率")
-    ax.set_title("Mutual kNN 重なり率 vs. k")
+    ax.set_ylabel("Mutual kNN Overlap")
+    ax.set_title("Mutual kNN Overlap vs. k")
     ax.set_ylim(0, 1.05)
     ax.legend()
     fig.tight_layout()
     fig.savefig(out / "mutual_knn.png", dpi=150)
     plt.close(fig)
 
-    # 訓練 vs テスト正準相関の散布図（過学習の可視化）
+    # Train vs Test canonical correlation scatter (overfitting check)
     fig, ax = plt.subplots(figsize=(5, 5))
     ax.scatter(
         cca.canonical_correlations_train,
@@ -920,9 +927,9 @@ def make_figures(
         alpha=0.7, color="steelblue", edgecolors="black", linewidths=0.5,
     )
     ax.plot([0, 1], [0, 1], "k--", linewidth=0.8, label="y = x")
-    ax.set_xlabel("訓練セット 正準相関 ρ")
-    ax.set_ylabel("テストセット 正準相関 ρ")
-    ax.set_title("Train vs Test 正準相関")
+    ax.set_xlabel("Train Canonical Correlation rho")
+    ax.set_ylabel("Test Canonical Correlation rho")
+    ax.set_title("Train vs Test Canonical Correlation")
     ax.set_xlim(0, 1.05)
     ax.set_ylim(0, 1.05)
     ax.legend()
@@ -1006,6 +1013,11 @@ def _apply_dry_run(
 
     # 少数サンプルでは共分散行列が必ず特異になるため正則化を強制する
     args.regularized = True
+
+    # n << d では OLS が underdetermined になり R² が発散するため Ridge を強制する
+    # alpha は n_train 以上の値に引き上げて数値的安定性を確保する
+    args.ridge = True
+    args.ridge_alpha = max(args.ridge_alpha, float(n_train))
 
     logger.warning(
         f"[dry-run] n={n}, n_train={n_train}, n_test={n_test}, "

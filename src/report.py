@@ -120,33 +120,31 @@ def generate_report(
         lines.append(f"| ... | （{cca.n_components - n_show} 成分省略）|")
     lines.append("")
 
-    # meanCCA@r テーブル
+    # 集約指標テーブル（実際の r_values に合わせて動的生成）
+    _r_keys = sorted(cca.mean_cca.keys())
+    _r_fmt = lambda d, r: f"{d[r]:.4f}"
+    _col_header = " | ".join(f"r={r}" for r in _r_keys)
+    _col_sep = "|------|" + "------|" * len(_r_keys)
     lines += [
         "### 集約指標",
         "",
-        "| 指標 | r=4 | r=8 | r=16 |",
-        "|------|-----|-----|------|",
+        f"| 指標 | {_col_header} |",
+        _col_sep,
+        "| meanCCA@r | " + " | ".join(_r_fmt(cca.mean_cca, r) for r in _r_keys) + " |",
+        "| sharedScore@r | " + " | ".join(_r_fmt(cca.shared_score, r) for r in _r_keys) + " |",
+        "| normalizedSharedScore@r | " + " | ".join(_r_fmt(cca.normalized_shared_score, r) for r in _r_keys) + " |",
+        "",
     ]
-    _r_fmt = lambda d, r: f"{d.get(r, float('nan')):.4f}" if r in d else "N/A"
-    lines.append(
-        f"| meanCCA@r | {_r_fmt(cca.mean_cca, 4)} | {_r_fmt(cca.mean_cca, 8)} | {_r_fmt(cca.mean_cca, 16)} |"
-    )
-    lines.append(
-        f"| sharedScore@r | {_r_fmt(cca.shared_score, 4)} | {_r_fmt(cca.shared_score, 8)} | {_r_fmt(cca.shared_score, 16)} |"
-    )
-    lines.append(
-        f"| normalizedSharedScore@r | {_r_fmt(cca.normalized_shared_score, 4)} | {_r_fmt(cca.normalized_shared_score, 8)} | {_r_fmt(cca.normalized_shared_score, 16)} |"
-    )
-    lines.append("")
 
     # 6. Merge 空間幾何
+    _fmt_float = lambda v: f"{v:.4f}" if not (v != v) else "N/A (n_test<3)"
     lines += [
         "## Merge 空間幾何（Z_L vs Z_S）",
         "",
         "| 指標 | 値 |",
         "|------|---|",
         f"| CKA (merge) | {cca.merge_cka:.4f} |",
-        f"| RSA Spearman ρ (merge) | {cca.merge_rsa_spearman:.4f} |",
+        f"| RSA Spearman ρ (merge) | {_fmt_float(cca.merge_rsa_spearman)} |",
     ]
     for k, v in sorted(cca.merge_mutual_knn.items()):
         lines.append(f"| mutual_kNN@{k} (merge) | {v:.4f} |")

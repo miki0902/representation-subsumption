@@ -73,6 +73,8 @@ def compute_rsa(F_L: np.ndarray, F_S: np.ndarray) -> float:
       RSA はペアワイズ距離のランク順構造を比較する。
       単調変換に対して頑健であり、関係的な幾何構造を捉える。
     """
+    if F_L.shape[0] < 3:
+        return float("nan")
     rdm_L = _upper_tri(euclidean_distances(F_L))
     rdm_S = _upper_tri(euclidean_distances(F_S))
     rho, _ = spearmanr(rdm_L, rdm_S)
