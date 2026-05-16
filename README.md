@@ -1,47 +1,47 @@
-# Representation Subsumption / Feature Hierarchy Analysis
+# Representation Subsumption / Feature Hierarchy 分析ツール
 
-A research toolkit for quantifying whether and how the representations of a **large** neural network model subsume (contain) those of a **small** model. Implements three complementary families of metrics: linear containment, geometric alignment, and subspace containment.
-
----
-
-## Purpose
-
-When scaling neural networks, a natural question arises: does a larger model simply "know everything" the smaller one does, plus more? This is *representation subsumption*. Concretely:
-
-- **Linear subsumption**: Can small-model features be linearly predicted from large-model features (but not vice versa)?
-- **Geometric alignment**: Are the relational structures (distances, neighborhoods) consistent across models?
-- **Subspace containment**: Do the principal directions of the small model's representation lie within the span of the large model's representation?
-
-This codebase provides all three analyses with a unified pipeline, reproducible configs, and structured Markdown reports.
+マルチスケールニューラルネットワークモデルにおいて、**Large モデル**の表現が **Small モデル**の表現を包含（含有）しているかどうかを定量化する研究用ツールキットです。線形包含・幾何的整合・部分空間包含の3系統の指標を実装しています。
 
 ---
 
-## Installation
+## 目的
+
+ニューラルネットワークをスケールアップするとき、「大きなモデルは小さなモデルが知っていることをすべて知っているうえで、さらに多くを知っているのか？」という問いが自然に生じます。これが *Representation Subsumption（表現包含）* です。具体的には：
+
+- **線形包含**: Small モデルの特徴は Large モデルの特徴から線形予測できるか（その逆は難しいか）？
+- **幾何的整合**: サンプル間の関係構造（距離・近傍）はモデル間で共通しているか？
+- **部分空間包含**: Small モデルの表現の主要方向は Large モデルの表現の張る空間に含まれるか？
+
+本コードベースはこの3分析を統一パイプラインで提供し、再現可能な設定ファイルと構造化 Markdown レポートを出力します。
+
+---
+
+## インストール
 
 ```bash
 cd representation_subsumption
 pip install -r requirements.txt
 ```
 
-Python 3.10+ is required (uses `X | Y` union type hints and `match/case` patterns).
+Python 3.10 以上が必要です（`X | Y` 型ヒントを使用）。
 
 ---
 
-## Usage
+## 使い方
 
-### Multi-file mode (recommended)
+### マルチファイルモード（推奨）
 
 ```bash
-# Edit configs/experiment.yaml to point to your feature files, then:
+# configs/experiment.yaml を編集して特徴量ファイルのパスを設定してから実行
 python scripts/run_analysis.py --config configs/experiment.yaml
 
-# With debug logging:
+# デバッグログあり
 python scripts/run_analysis.py --config configs/experiment.yaml --debug
 ```
 
-### Single-file mode (submission / no-package environments)
+### 単一ファイルモード（提出用・パッケージ不要環境向け）
 
-All logic is inlined in `scripts/run_single_file.py`. No package installation beyond `requirements.txt` is needed.
+すべてのロジックを `scripts/run_single_file.py` にインライン化しています。`requirements.txt` 以外のパッケージインストール不要です。
 
 ```bash
 python scripts/run_single_file.py \
@@ -54,7 +54,7 @@ python scripts/run_single_file.py \
     --output-dir results \
     --figures
 
-# With Ridge regression:
+# Ridge 回帰を使う場合
 python scripts/run_single_file.py \
     --large features/large.pt \
     --small features/small.pt \
@@ -63,83 +63,83 @@ python scripts/run_single_file.py \
 
 ---
 
-## Directory Structure
+## ディレクトリ構成
 
 ```
 representation_subsumption/
-  README.md               # This file
-  requirements.txt        # Python dependencies
-  pyproject.toml          # pytest configuration
+  README.md               # 本ファイル
+  requirements.txt        # Python 依存パッケージ
+  pyproject.toml          # pytest 設定
   configs/
-    experiment.yaml       # Experiment configuration
+    experiment.yaml       # 実験設定ファイル
   src/
     __init__.py
-    feature_io.py         # Load/align features (.pt, .npy, .npz)
-    metrics_linear.py     # Bidirectional R² / MSE
+    feature_io.py         # 特徴量の読み込み・アライメント（.pt, .npy, .npz）
+    metrics_linear.py     # 双方向 R² / MSE
     metrics_geometry.py   # CKA, RSA, mutual kNN
-    metrics_subspace.py   # Subspace containment via SVD
-    report.py             # Markdown report generation
-    utils.py              # Logging, seeding, YAML loading
+    metrics_subspace.py   # SVD による部分空間包含度
+    report.py             # Markdown レポート生成
+    utils.py              # ロギング・シード・YAML 読み込み
   scripts/
-    run_analysis.py       # Config-driven multi-file pipeline
-    run_single_file.py    # Self-contained single-file version
+    run_analysis.py       # 設定ファイル駆動のマルチファイルパイプライン
+    run_single_file.py    # 自己完結型単一ファイル版
   tests/
     test_feature_io.py
     test_linear_metrics.py
     test_geometry_metrics.py
     test_subspace_metrics.py
   results/
-    figures/              # PNG plots
-    tables/               # CSV tables (future use)
-    reports/              # Markdown summary reports
+    figures/              # PNG 図表
+    tables/               # CSV テーブル（将来利用）
+    reports/              # Markdown サマリーレポート
 ```
 
 ---
 
-## Config Reference (`configs/experiment.yaml`)
+## 設定ファイルリファレンス（`configs/experiment.yaml`）
 
-| Key | Description | Default |
-|-----|-------------|---------|
-| `experiment.name` | Experiment label in report | `"representation_subsumption_analysis"` |
-| `experiment.large_model` | Name label for large model | `"large_model"` |
-| `experiment.small_model` | Name label for small model | `"small_model"` |
-| `features.large_path` | Path to large model features | required |
-| `features.small_path` | Path to small model features | required |
-| `features.large_layers` | List of layer-wise feature paths (large) | `[]` |
-| `features.small_layers` | List of layer-wise feature paths (small) | `[]` |
-| `linear.test_size` | Fraction of data held out for test | `0.2` |
-| `linear.random_state` | RNG seed for train/test split | `42` |
-| `linear.use_ridge` | Use Ridge instead of OLS | `false` |
-| `linear.ridge_alpha` | Ridge regularization alpha | `1.0` |
-| `geometry.knn_k` | List of k values for mutual kNN | `[5, 10, 20]` |
-| `subspace.n_components` | List of r values for subspace analysis | `[16, 32, 64, 128]` |
-| `output.results_dir` | Root results directory | `"results"` |
-| `output.figures_dir` | Figures output path | `"results/figures"` |
-| `output.tables_dir` | Tables output path | `"results/tables"` |
-| `output.reports_dir` | Reports output path | `"results/reports"` |
-
----
-
-## Feature File Format
-
-Features can be stored as:
-
-- **`.npy`**: Plain `(n_samples, d)` float32 array.
-- **`.npz`**: Compressed archive with key `"features"` (shape `(n_samples, d)`) and optionally `"sample_ids"` (shape `(n_samples,)`).
-- **`.pt`**: PyTorch file. Either a `Tensor` of shape `(n_samples, d)`, or a `dict` with keys `"features"` and optionally `"sample_ids"`.
-
-When both feature sets include `sample_ids`, the pipeline automatically finds the intersection and aligns rows. Without `sample_ids`, sample counts must match.
+| キー | 説明 | デフォルト |
+|------|------|-----------|
+| `experiment.name` | レポートに記載する実験ラベル | `"representation_subsumption_analysis"` |
+| `experiment.large_model` | Large モデルの名前ラベル | `"large_model"` |
+| `experiment.small_model` | Small モデルの名前ラベル | `"small_model"` |
+| `features.large_path` | Large モデル特徴量ファイルのパス | 必須 |
+| `features.small_path` | Small モデル特徴量ファイルのパス | 必須 |
+| `features.large_layers` | Large モデルの層別特徴量パスのリスト | `[]` |
+| `features.small_layers` | Small モデルの層別特徴量パスのリスト | `[]` |
+| `linear.test_size` | テスト用に保留するデータの割合 | `0.2` |
+| `linear.random_state` | train/test split の乱数シード | `42` |
+| `linear.use_ridge` | OLS の代わりに Ridge 回帰を使用する | `false` |
+| `linear.ridge_alpha` | Ridge の正則化強度 α | `1.0` |
+| `geometry.knn_k` | mutual kNN の k 値のリスト | `[5, 10, 20]` |
+| `subspace.n_components` | 部分空間分析の r 値のリスト | `[16, 32, 64, 128]` |
+| `output.results_dir` | 結果出力のルートディレクトリ | `"results"` |
+| `output.figures_dir` | 図表の出力パス | `"results/figures"` |
+| `output.tables_dir` | テーブルの出力パス | `"results/tables"` |
+| `output.reports_dir` | レポートの出力パス | `"results/reports"` |
 
 ---
 
-## Running Tests
+## 特徴量ファイルフォーマット
+
+以下の形式に対応しています：
+
+- **`.npy`**: `(n_samples, d)` の float32 配列をそのまま保存したもの。
+- **`.npz`**: キー `"features"`（shape `(n_samples, d)`）と、オプションで `"sample_ids"`（shape `(n_samples,)`）を含む圧縮アーカイブ。
+- **`.pt`**: PyTorch ファイル。`(n_samples, d)` の `Tensor`、またはキー `"features"` とオプションの `"sample_ids"` を持つ `dict`。
+
+両方の特徴量セットに `sample_ids` が含まれている場合、パイプラインは自動的に共通部分を見つけて行を対応付けます。`sample_ids` がない場合はサンプル数が一致している必要があります。
+
+---
+
+## テスト実行
 
 ```bash
 cd representation_subsumption
 pytest tests/ -v
 ```
 
-To run a specific test file:
+特定のテストファイルだけ実行する場合：
 
 ```bash
 pytest tests/test_linear_metrics.py -v
@@ -150,35 +150,35 @@ pytest tests/test_feature_io.py -v
 
 ---
 
-## Metric Interpretations
+## 指標の解釈
 
-### Linear Containment (`metrics_linear.py`)
+### 線形包含（`metrics_linear.py`）
 
-- **R²_L→S**: How well large-model features linearly predict small-model features (on held-out test set). High value means Large contains enough information to reconstruct Small.
-- **R²_S→L**: Reverse direction. High value means Small can reconstruct Large.
-- **Directional Gap** = R²_L→S − R²_S→L: Positive gap indicates Large subsumes Small asymmetrically.
-- **Interpretation**:
-  - Gap > 0.3: Clear subsumption (Large contains Small's information, but not vice versa).
-  - Both R² > 0.8: Near-isomorphism (models encode similar information).
-  - Both R² < 0.5: Little linear overlap.
+- **R²_L→S**: Large モデルの特徴から Small モデルの特徴をどれだけ線形予測できるか（ホールドアウトテストセット上で評価）。高い値は Large が Small を再構成するのに十分な情報を持つことを意味します。
+- **R²_S→L**: 逆方向。Small が Large を再構成できるか。
+- **Directional Gap** = R²_L→S − R²_S→L: 正の Gap は Large が Small を非対称に包含していることを示します。
+- **解釈の目安**：
+  - Gap > 0.3: 明確な包含（Large は Small の情報を持つが逆は成り立たない）
+  - 両方の R² > 0.8: ほぼ同型（両モデルが似た情報を符号化している）
+  - 両方の R² < 0.5: 線形的な重複がほとんどない
 
-### Geometric Alignment (`metrics_geometry.py`)
+### 幾何的整合（`metrics_geometry.py`）
 
-- **CKA** (Centered Kernel Alignment, Kornblith et al. 2019): Invariant to orthogonal transforms and isotropic scaling. CKA ∈ [0, 1]; 1 = identical geometry.
-- **RSA** (Representational Similarity Analysis): Spearman correlation of upper-triangle pairwise distance matrices. Captures rank-order geometry.
-- **Mutual kNN@k**: Fraction of each sample's k nearest neighbors shared between both spaces, averaged over all samples. Measures local neighborhood consistency.
+- **CKA**（Centered Kernel Alignment, Kornblith et al. 2019）: 直交変換・等方スケーリングに対して不変。CKA ∈ [0, 1]、1 = 完全一致。
+- **RSA**（Representational Similarity Analysis）: ペアワイズ距離行列の上三角部分の Spearman 相関。ランク順の幾何構造を捉えます。
+- **Mutual kNN@k**: 各サンプルの k 近傍がモデル間で共有される割合の平均。局所的な近傍構造の一致を測定します。
 
-### Subspace Containment (`metrics_subspace.py`)
+### 部分空間包含（`metrics_subspace.py`）
 
-- Uses SVD to extract top-r principal directions from each model's feature matrix.
-- **Containment(S in L)** = `||P_L V_S||_F² / ||V_S||_F²`: How much of Small's top-r directions project onto Large's top-r subspace.
-- **Containment(L in S)**: Reverse direction.
-- **Gap** = Containment(S in L) − Containment(L in S): Positive = Small's structure is more explained by Large than vice versa.
-- Value of 1.0 = complete containment; 0.0 = orthogonal subspaces.
+- SVD により各モデルの特徴行列から上位 r 主方向を抽出します。
+- **Containment(S in L)** = `||P_L V_S||_F² / ||V_S||_F²`: Small の上位 r 方向が Large の上位 r 部分空間にどれだけ射影されるか。
+- **Containment(L in S)**: 逆方向。
+- **Gap** = Containment(S in L) − Containment(L in S): 正の値は Small の構造が Large によって説明されやすいことを示します。
+- 1.0 = 完全包含、0.0 = 直交する部分空間。
 
 ---
 
-## References
+## 参考文献
 
 - Kornblith, S., Norouzi, M., Lee, H., & Hinton, G. (2019). Similarity of Neural Network Representations Revisited. *ICML*.
 - Huh, M., Cheung, B., Wang, T., & Isola, P. (2024). The Platonic Representation Hypothesis. *ICML*.

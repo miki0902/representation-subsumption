@@ -1,7 +1,7 @@
 """
-Multi-file analysis script: loads config, runs all metrics, writes report and figures.
+マルチファイル分析スクリプト: 設定ファイルを読み込み、全指標を計算してレポートと図を出力する。
 
-Usage:
+使い方:
   python scripts/run_analysis.py --config configs/experiment.yaml
 """
 
@@ -22,7 +22,7 @@ logger = logging.getLogger(__name__)
 
 
 def parse_args() -> argparse.Namespace:
-    p = argparse.ArgumentParser(description="Representation Subsumption Analysis")
+    p = argparse.ArgumentParser(description="Representation Subsumption 分析")
     p.add_argument("--config", default="configs/experiment.yaml")
     p.add_argument("--debug", action="store_true")
     return p.parse_args()
@@ -43,7 +43,7 @@ def run(cfg: dict) -> None:
     F_L, F_S = align_features(large_feat, small_feat)
     n_samples, d_L = F_L.shape
     d_S = F_S.shape[1]
-    logger.info(f"Analysis: n={n_samples}, d_L={d_L}, d_S={d_S}")
+    logger.info(f"分析対象: n={n_samples}, d_L={d_L}, d_S={d_S}")
 
     lin_cfg = cfg.get("linear", {})
     linear = compute_linear_metrics(
@@ -72,20 +72,20 @@ def run(cfg: dict) -> None:
         output_path=str(report_path),
     )
 
-    logger.info(f"Report written to {report_path}")
+    logger.info(f"レポートを出力しました: {report_path}")
     print(report)
 
     try:
         _make_figures(linear, geometry, subspace, out_cfg)
     except ImportError:
-        logger.warning("matplotlib not available; skipping figures.")
+        logger.warning("matplotlib が見つかりません。図の生成をスキップします。")
 
 
 def _make_figures(linear, geometry, subspace, out_cfg: dict) -> None:
     import matplotlib.pyplot as plt
     figs_dir = Path(out_cfg.get("figures_dir", "results/figures"))
 
-    # Directional gap bar chart
+    # 方向性ギャップの棒グラフ
     fig, ax = plt.subplots(figsize=(5, 4))
     labels = ["R²_L→S", "R²_S→L", "Gap"]
     values = [linear.r2_l_to_s, linear.r2_s_to_l, linear.directional_gap]
@@ -93,42 +93,42 @@ def _make_figures(linear, geometry, subspace, out_cfg: dict) -> None:
     ax.bar(labels, values, color=colors)
     ax.set_ylim(-1, 1)
     ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
-    ax.set_title("Linear Containment: Directional R²")
+    ax.set_title("線形包含: 方向性 R²")
     ax.set_ylabel("R²")
     fig.tight_layout()
     fig.savefig(figs_dir / "linear_directional_gap.png", dpi=150)
     plt.close(fig)
 
-    # Subspace containment line chart
+    # 部分空間包含の折れ線グラフ
     rs = sorted(subspace.containment_s_in_l)
     s_in_l = [subspace.containment_s_in_l[r] for r in rs]
     l_in_s = [subspace.containment_l_in_s[r] for r in rs]
     fig, ax = plt.subplots(figsize=(6, 4))
     ax.plot(rs, s_in_l, marker="o", label="Small in Large")
     ax.plot(rs, l_in_s, marker="s", label="Large in Small")
-    ax.set_xlabel("r (# components)")
-    ax.set_ylabel("Containment")
-    ax.set_title("Subspace Containment vs. r")
+    ax.set_xlabel("r（主成分数）")
+    ax.set_ylabel("包含度")
+    ax.set_title("部分空間包含度 vs. r")
     ax.legend()
     ax.set_ylim(0, 1.05)
     fig.tight_layout()
     fig.savefig(figs_dir / "subspace_containment.png", dpi=150)
     plt.close(fig)
 
-    # mutual kNN line chart
+    # mutual kNN の折れ線グラフ
     ks = sorted(geometry.mutual_knn)
     knn_vals = [geometry.mutual_knn[k] for k in ks]
     fig, ax = plt.subplots(figsize=(5, 4))
     ax.plot(ks, knn_vals, marker="o", color="darkorchid")
     ax.set_xlabel("k")
-    ax.set_ylabel("mutual kNN overlap")
-    ax.set_title("Mutual kNN Overlap vs. k")
+    ax.set_ylabel("mutual kNN 重なり率")
+    ax.set_title("Mutual kNN 重なり率 vs. k")
     ax.set_ylim(0, 1.05)
     fig.tight_layout()
     fig.savefig(figs_dir / "mutual_knn.png", dpi=150)
     plt.close(fig)
 
-    logger.info(f"Figures saved to {figs_dir}")
+    logger.info(f"図を保存しました: {figs_dir}")
 
 
 def main() -> None:

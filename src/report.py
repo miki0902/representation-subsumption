@@ -1,15 +1,14 @@
 """
-Report generation: structured Markdown suitable for GitHub Issues.
+Markdown レポート生成: GitHub Issue への貼り付けに適した構造化出力。
 
-Why: Experiment results should be reproducible and traceable. Outputting
-a structured Markdown file makes it trivial to copy results into GitHub Issues,
-preserving tables and headers for readability.
+なぜ Markdown ファイルとして出力するか:
+  実験結果は再現可能かつ追跡可能である必要がある。
+  構造化 Markdown を出力することで GitHub Issue への貼り付けが容易になり、
+  テーブルや見出しが読みやすい形式で保存・共有できる。
 """
 
-import json
 from datetime import datetime
 from pathlib import Path
-from typing import Any
 
 from .metrics_linear import LinearMetrics
 from .metrics_geometry import GeometricMetrics
@@ -27,36 +26,36 @@ def generate_report(
     output_path: str,
     layer_results: list[dict] | None = None,
 ) -> str:
-    """Build and write Markdown summary report.
+    """Markdown サマリーレポートを構築してファイルに書き出す。
 
-    Returns the report string for further use.
+    戻り値: レポート文字列（後続の処理でも利用できるよう返す）。
     """
     lines = []
     exp = cfg.get("experiment", {})
 
     lines += [
-        f"# Representation Subsumption Analysis",
-        f"",
-        f"**Date**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        f"**Experiment**: {exp.get('name', 'N/A')}",
-        f"**Large model**: `{exp.get('large_model', 'N/A')}`",
-        f"**Small model**: `{exp.get('small_model', 'N/A')}`",
-        f"",
-        f"## Dataset",
-        f"",
-        f"| Key | Value |",
-        f"|-----|-------|",
-        f"| Samples | {n_samples} |",
+        "# Representation Subsumption 分析レポート",
+        "",
+        f"**日時**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"**実験名**: {exp.get('name', 'N/A')}",
+        f"**Large モデル**: `{exp.get('large_model', 'N/A')}`",
+        f"**Small モデル**: `{exp.get('small_model', 'N/A')}`",
+        "",
+        "## データセット",
+        "",
+        "| 項目 | 値 |",
+        "|------|---|",
+        f"| サンプル数 | {n_samples} |",
         f"| d_L | {d_L} |",
         f"| d_S | {d_S} |",
-        f"",
+        "",
     ]
 
     lines += [
-        "## Linear Containment",
+        "## 線形包含",
         "",
-        "| Metric | Value |",
-        "|--------|-------|",
+        "| 指標 | 値 |",
+        "|------|---|",
         f"| R²_L→S | {linear.r2_l_to_s:.4f} |",
         f"| R²_S→L | {linear.r2_s_to_l:.4f} |",
         f"| MSE_L→S | {linear.mse_l_to_s:.6f} |",
@@ -66,10 +65,10 @@ def generate_report(
     ]
 
     lines += [
-        "## Geometric Alignment",
+        "## 幾何的整合",
         "",
-        "| Metric | Value |",
-        "|--------|-------|",
+        "| 指標 | 値 |",
+        "|------|---|",
         f"| CKA | {geometry.cka:.4f} |",
         f"| RSA (Spearman ρ) | {geometry.rsa_spearman:.4f} |",
     ]
@@ -78,7 +77,7 @@ def generate_report(
     lines.append("")
 
     lines += [
-        "## Subspace Containment",
+        "## 部分空間包含",
         "",
         "| r | S_in_L | L_in_S | Gap (S_in_L − L_in_S) |",
         "|---|--------|--------|------------------------|",
@@ -108,46 +107,45 @@ def _interpretation_block(
     geometry: GeometricMetrics,
     subspace: SubspaceMetrics,
 ) -> list[str]:
-    lines = ["## Key Observations", ""]
+    lines = ["## 主要な観察", ""]
 
-    # Linear interpretation
-    gap = linear.directional_gap
+    # 線形包含の解釈
     if linear.r2_l_to_s > 0.9 and linear.r2_s_to_l < 0.5:
-        obs = "Large linearly subsumes Small (high R²_L→S, low R²_S→L)."
+        obs = "Large が Small を線形的に包含しています（R²_L→S が高く R²_S→L が低い）。"
     elif linear.r2_l_to_s > 0.8 and linear.r2_s_to_l > 0.8:
-        obs = "Both directions high: representations are nearly isomorphic."
+        obs = "両方向とも高い: 表現はほぼ同型です。"
     elif linear.r2_l_to_s > 0.5 and linear.r2_s_to_l > 0.5:
-        obs = "Moderate bidirectional R²: shared components exist but no full containment."
+        obs = "双方向 R² が中程度: 共有成分はあるが完全包含ではありません。"
     else:
-        obs = "Low R²_L→S: Small has components not linearly explained by Large."
-    lines += [f"- **Linear**: {obs}"]
+        obs = "R²_L→S が低い: Small には Large から線形説明できない成分があります。"
+    lines += [f"- **線形**: {obs}"]
 
-    # Geometric interpretation
+    # 幾何的整合の解釈
     if geometry.cka > 0.9:
-        lines += ["- **CKA**: Very high — representations are geometrically similar."]
+        lines += ["- **CKA**: 非常に高い — 表現は幾何的に類似しています。"]
     elif geometry.cka > 0.6:
-        lines += ["- **CKA**: Moderate — partial geometric alignment."]
+        lines += ["- **CKA**: 中程度 — 部分的な幾何的整合があります。"]
     else:
-        lines += ["- **CKA**: Low — representations differ in geometry."]
+        lines += ["- **CKA**: 低い — 表現の幾何構造が異なります。"]
 
-    # Subspace interpretation
+    # 部分空間包含の解釈
     max_r = max(subspace.containment_s_in_l)
     c_s_in_l = subspace.containment_s_in_l[max_r]
     if c_s_in_l > 0.9:
-        lines += [f"- **Subspace (r={max_r})**: Small's principal directions are well-contained in Large."]
+        lines += [f"- **部分空間 (r={max_r})**: Small の主方向は Large の空間によく含まれています。"]
     elif c_s_in_l > 0.6:
-        lines += [f"- **Subspace (r={max_r})**: Partial containment of Small in Large."]
+        lines += [f"- **部分空間 (r={max_r})**: Small の Large への部分的な包含があります。"]
     else:
-        lines += [f"- **Subspace (r={max_r})**: Small has principal directions outside Large's subspace."]
+        lines += [f"- **部分空間 (r={max_r})**: Small には Large の部分空間外の主方向が存在します。"]
 
     lines.append("")
     return lines
 
 
 def _layer_results_section(layer_results: list[dict]) -> list[str]:
-    lines = ["## Layer-Pair Analysis", ""]
-    lines += ["| Large Layer | Small Layer | R²_L→S | R²_S→L | CKA | RSA | kNN@10 |"]
-    lines += ["|-------------|-------------|--------|--------|-----|-----|--------|"]
+    lines = ["## 層ペア分析", ""]
+    lines += ["| Large 層 | Small 層 | R²_L→S | R²_S→L | CKA | RSA | kNN@10 |"]
+    lines += ["|----------|----------|--------|--------|-----|-----|--------|"]
     for r in layer_results:
         lines.append(
             f"| {r['large_layer']} | {r['small_layer']} | "

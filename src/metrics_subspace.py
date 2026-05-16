@@ -1,19 +1,19 @@
 """
-Subspace containment: measures how much of Small's principal subspace lies within Large's.
+部分空間包含度: Small の主部分空間が Large の主部分空間にどれだけ含まれるかを測る。
 
-Why: Linear R² tests coordinate recovery; subspace containment tests whether the
-*directions* that matter most to Small are representable in Large's span, regardless
-of specific coordinates. This is a stronger geometric claim than RSA/CKA.
+なぜ線形 R² とは別にこの指標が必要か:
+  線形 R² は座標レベルの復元を測るが、部分空間包含は
+  「Small にとって最重要な方向」が Large の張る空間で表現可能かを測る。
+  特定の座標ではなく、方向そのものの包含関係を問う、より強い幾何的主張である。
 
-When the two models have the same feature dimension (d_L == d_S), we use direct
-Frobenius-norm projection in the shared ambient space.
+d_L == d_S の場合:
+  共通の環境空間で直接 Frobenius ノルムによる射影を計算できる（高速・厳密）。
 
-When d_L != d_S (the common case when comparing models of different widths), we
-measure containment through the data: specifically, we ask "how much variance of
-the small model's top-r projections can be linearly explained by the large model's
-features?" using the R² of a linear regression from F_L → (F_S_c @ V_S). This is
-the sample-space analogue of subspace containment and reduces to the geometric
-measure when dimensions agree.
+d_L != d_S の場合（幅の異なるモデルを比較する典型ケース）:
+  環境空間が異なるため直接射影できない。
+  代わりに「データを介した測定」として、一方のモデルの特徴量から
+  他方の上位 r 主成分スコアをどれだけ線形予測できるかを R² で測る。
+  これは次元が一致する場合の幾何的測定と整合する。
 """
 
 from dataclasses import dataclass
@@ -23,7 +23,7 @@ from sklearn.linear_model import LinearRegression
 
 @dataclass
 class SubspaceMetrics:
-    # dict keys are r values
+    # dict のキーは r の値
     containment_s_in_l: dict[int, float]
     containment_l_in_s: dict[int, float]
     containment_gap: dict[int, float]
@@ -40,7 +40,7 @@ def compute_subspace_metrics(
     same_dim = F_L.shape[1] == F_S.shape[1]
 
     if same_dim:
-        # Direct ambient-space projection: fast and exact
+        # 共通環境空間での直接射影: 高速かつ厳密
         V_L_full = _top_components(F_L_c, max(n_components_list))
         V_S_full = _top_components(F_S_c, max(n_components_list))
 
@@ -60,8 +60,7 @@ def compute_subspace_metrics(
             containment_l_in_s[r] = c_l_in_s
             containment_gap[r] = c_s_in_l - c_l_in_s
     else:
-        # Different ambient dimensions: measure through data projections (R² of
-        # linear regression from one model's features to the other's PCA scores)
+        # 次元が異なる場合: データ射影 R² で包含度を代替測定する
         V_L_full = _top_components(F_L_c, max(n_components_list))
         V_S_full = _top_components(F_S_c, max(n_components_list))
 
@@ -77,7 +76,7 @@ def compute_subspace_metrics(
             V_L = V_L_full[:, :r_eff]
             V_S = V_S_full[:, :r_eff]
 
-            # Scores in each model's PC space (n_samples, r_eff)
+            # 各モデルの PC 空間でのスコア (n_samples, r_eff)
             scores_L = F_L_c @ V_L
             scores_S = F_S_c @ V_S
 
@@ -96,13 +95,13 @@ def compute_subspace_metrics(
 
 
 def _regression_r2(X: np.ndarray, Y: np.ndarray) -> float:
-    """Fraction of Y's variance explained by a linear function of X (in-sample R²).
+    """X の線形関数で Y の分散をどれだけ説明できるかを in-sample R² で測る。
 
-    Why in-sample here: we're measuring the geometric property of whether the
-    subspace is linearly representable, not a generalization property. With
-    standardised PC-score targets (unit variance by construction), in-sample R²
-    is a tight proxy for containment and avoids train/test split noise for this
-    use-case.
+    なぜここでは in-sample R² を使うか:
+      サブスペース包含は汎化特性ではなく幾何的特性を問うている。
+      PCA スコアのターゲットは構成上単位分散を持つため、
+      in-sample R² が包含度の tight な代理指標となり、
+      train/test split によるノイズを避けられる。
     """
     reg = LinearRegression(fit_intercept=False)
     reg.fit(X, Y)
@@ -119,12 +118,12 @@ def _center(F: np.ndarray) -> np.ndarray:
 
 
 def _top_components(F_centered: np.ndarray, r: int) -> np.ndarray:
-    """Extract top-r right singular vectors via SVD.
+    """SVD で上位 r 右特異ベクトルを抽出する。
 
-    Why: SVD on the centered feature matrix gives principal components without
-    explicitly computing the covariance matrix, which is more numerically stable
-    for high-dimensional features.
-    Returns V of shape (d, r).
+    なぜ共分散行列ではなく SVD を使うか:
+      高次元特徴量で共分散行列を明示的に計算すると数値的に不安定になる。
+      中心化後の特徴量行列への直接 SVD はより安定した主成分を与える。
+    戻り値の shape: (d, r)
     """
     r_eff = min(r, min(F_centered.shape))
     _, _, Vt = np.linalg.svd(F_centered, full_matrices=False)
@@ -132,16 +131,17 @@ def _top_components(F_centered: np.ndarray, r: int) -> np.ndarray:
 
 
 def _subspace_containment(V_query: np.ndarray, V_base: np.ndarray) -> float:
-    """Measure how much of V_query's column space lies in V_base's column space.
+    """V_query の列空間が V_base の列空間にどれだけ含まれるかを測る。
 
-    Formula: ||P_{V_base} V_query||_F^2 / ||V_query||_F^2
+    計算式: ||P_{V_base} V_query||_F^2 / ||V_query||_F^2
 
-    Why: The Frobenius norm of the projection quantifies the total "energy" of
-    V_query that is explainable by V_base directions. Value of 1 means complete
-    containment; 0 means orthogonal subspaces.
+    なぜ Frobenius ノルムで測るか:
+      射影の Frobenius ノルムは、V_query の「エネルギー」のうち
+      V_base の方向で説明できる割合を定量化する。
+      1 = 完全包含、0 = 直交する部分空間。
 
-    Assumes V_query and V_base live in the same ambient space (d_L == d_S).
-    Assumes columns of V_base are orthonormal (from SVD).
+    前提: V_query と V_base は同一環境空間（d_L == d_S）に存在する。
+    前提: V_base の列は SVD により正規直交である。
     """
     # P_{V_base} V_query = V_base (V_base^T V_query)
     proj = V_base @ (V_base.T @ V_query)

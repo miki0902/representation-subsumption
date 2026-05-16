@@ -1,4 +1,4 @@
-"""Shared utilities: seeding, logging setup, config loading, directory creation."""
+"""共通ユーティリティ: シード固定・ロギング設定・YAML 読み込み・ディレクトリ作成。"""
 
 import logging
 import random
@@ -31,7 +31,7 @@ def ensure_dirs(*paths: str) -> None:
 
 
 def safe_r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    """R² that returns 0 when variance of y_true is 0 (degenerate case)."""
+    """y_true の分散が 0 の縮退ケースで 0 を返す R²。"""
     ss_res = np.sum((y_true - y_pred) ** 2)
     ss_tot = np.sum((y_true - y_true.mean(axis=0)) ** 2)
     if ss_tot == 0:

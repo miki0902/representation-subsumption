@@ -1,11 +1,11 @@
 """
-Self-contained single-file analysis script for Representation Subsumption.
+Representation Subsumption 分析の自己完結型単一ファイルスクリプト。
 
-All logic from feature_io, metrics_linear, metrics_geometry, metrics_subspace,
-report, and utils is inlined here. No package installation needed beyond the
-standard dependencies listed in requirements.txt.
+feature_io, metrics_linear, metrics_geometry, metrics_subspace, report, utils
+のすべてのロジックをここにインライン化しています。
+requirements.txt に記載の標準依存パッケージ以外のインストール不要です。
 
-Usage:
+使い方:
   python scripts/run_single_file.py --large features/large.npy --small features/small.npy
   python scripts/run_single_file.py --large features/large.pt --small features/small.pt \\
       --large-model resnet50 --small-model resnet18 \\
@@ -61,7 +61,7 @@ def ensure_dirs(*paths: str) -> None:
 
 
 def safe_r2(y_true: np.ndarray, y_pred: np.ndarray) -> float:
-    """R² that returns 0 when variance of y_true is 0 (degenerate case)."""
+    """y_true の分散が 0 の縮退ケースで 0 を返す R²。"""
     ss_res = np.sum((y_true - y_pred) ** 2)
     ss_tot = np.sum((y_true - y_true.mean(axis=0)) ** 2)
     if ss_tot == 0:
@@ -83,14 +83,15 @@ class FeatureSet:
 
 
 def load_features(path: str, model_name: str = "") -> FeatureSet:
-    """Load features from .pt, .npy, or .npz file.
+    """特徴量を .pt / .npy / .npz ファイルから読み込む。
 
-    Why: Research environments use varied serialization formats; unified loading
-    avoids per-script format handling.
+    なぜ統一ロード関数が必要か:
+      研究環境では保存形式がスクリプトごとに異なることが多い。
+      形式ごとの分岐を各スクリプトに書かずに済むよう、ここで吸収する。
     """
     p = Path(path)
     if not p.exists():
-        raise FileNotFoundError(f"Feature file not found: {path}")
+        raise FileNotFoundError(f"特徴量ファイルが見つかりません: {path}")
 
     suffix = p.suffix.lower()
     sample_ids = None
@@ -108,7 +109,7 @@ def load_features(path: str, model_name: str = "") -> FeatureSet:
         elif isinstance(data, torch.Tensor):
             features = data.numpy()
         else:
-            raise ValueError(f"Unsupported .pt content type: {type(data)}")
+            raise ValueError(f"非対応の .pt コンテンツ型: {type(data)}")
 
     elif suffix == ".npy":
         features = np.load(path)
@@ -119,65 +120,73 @@ def load_features(path: str, model_name: str = "") -> FeatureSet:
             features = data["features"]
             sample_ids = data.get("sample_ids", None)
         else:
+            # "features" キーがない場合は最初の配列を特徴量として使う
             key = list(data.keys())[0]
             features = data[key]
 
     else:
-        raise ValueError(f"Unsupported file extension: {suffix}. Use .pt, .npy, or .npz")
+        raise ValueError(f"非対応の拡張子: {suffix}。.pt / .npy / .npz を使用してください")
 
     features = np.asarray(features, dtype=np.float32)
     _validate_features(features, path)
 
-    logger.info(f"Loaded {model_name} features: shape={features.shape}, path={path}")
+    logger.info(f"{model_name} の特徴量を読み込みました: shape={features.shape}, path={path}")
     return FeatureSet(features=features, sample_ids=sample_ids, source_path=path, model_name=model_name)
 
 
 def _validate_features(features: np.ndarray, source: str) -> None:
-    """Check for NaN/Inf which would silently corrupt all downstream metrics."""
+    """NaN / Inf を検出して明示的にエラーを出す。
+
+    なぜ明示的に検出するか:
+      NaN / Inf が混入していると後続の指標計算がすべて静かに壊れる。
+      早期に検出して問題箇所を特定しやすくするため。
+    """
     if np.any(np.isnan(features)):
-        raise ValueError(f"NaN detected in features from {source}")
+        raise ValueError(f"{source} の特徴量に NaN が含まれています")
     if np.any(np.isinf(features)):
-        raise ValueError(f"Inf detected in features from {source}")
+        raise ValueError(f"{source} の特徴量に Inf が含まれています")
     if features.ndim != 2:
-        raise ValueError(f"Expected 2D feature array, got shape {features.shape} from {source}")
+        raise ValueError(f"2次元の特徴量配列を期待しましたが、{source} の shape は {features.shape} です")
 
 
 def align_features(large: FeatureSet, small: FeatureSet) -> tuple[np.ndarray, np.ndarray]:
-    """Align Large and Small features on common sample_ids.
+    """Large と Small の特徴量を共通 sample_id で行揃えする。
 
-    Why: When sample_ids differ (e.g., subsets from different extraction runs),
-    we must find the intersection to ensure row-wise correspondence.
-    Returns (F_L, F_S) aligned arrays.
+    なぜアライメントが必要か:
+      異なる抽出ランからのサブセットなど、sample_id が食い違う場合がある。
+      共通部分の積集合を取ることで行ごとの対応を保証する。
+    戻り値: アライメント済みの (F_L, F_S) タプル。
     """
     if large.sample_ids is None or small.sample_ids is None:
         n_L, n_S = len(large.features), len(small.features)
         if n_L != n_S:
             raise ValueError(
-                f"Feature count mismatch without sample_ids: large={n_L}, small={n_S}. "
-                "Provide sample_ids or ensure equal sample counts."
+                f"sample_ids なしでサンプル数が不一致: large={n_L}, small={n_S}。"
+                " sample_ids を付与するか、サンプル数を揃えてください。"
             )
         return large.features, small.features
 
     common_ids = np.intersect1d(large.sample_ids, small.sample_ids)
     if len(common_ids) == 0:
-        raise ValueError("No common sample_ids between large and small feature sets.")
+        raise ValueError("large と small に共通する sample_id がありません。")
 
     dropped = (len(large.sample_ids) - len(common_ids)) + (len(small.sample_ids) - len(common_ids))
     if dropped > 0:
         logger.warning(
-            f"Dropped {dropped} samples due to sample_id mismatch; using {len(common_ids)} common samples."
+            f"sample_id 不一致により {dropped} サンプルを除外しました。共通サンプル数: {len(common_ids)}"
         )
 
     large_idx = np.where(np.isin(large.sample_ids, common_ids))[0]
     small_idx = np.where(np.isin(small.sample_ids, common_ids))[0]
 
+    # 両側を common_ids でソートして行の対応を確定させる
     large_order = np.argsort(large.sample_ids[large_idx])
     small_order = np.argsort(small.sample_ids[small_idx])
 
     F_L = large.features[large_idx[large_order]]
     F_S = small.features[small_idx[small_order]]
 
-    logger.info(f"Aligned features: n_samples={len(common_ids)}, d_L={F_L.shape[1]}, d_S={F_S.shape[1]}")
+    logger.info(f"アライメント完了: n_samples={len(common_ids)}, d_L={F_L.shape[1]}, d_S={F_S.shape[1]}")
     return F_L, F_S
 
 
@@ -203,12 +212,14 @@ def compute_linear_metrics(
     use_ridge: bool = False,
     ridge_alpha: float = 1.0,
 ) -> LinearMetrics:
-    """Compute bidirectional linear regression R² between F_L and F_S.
+    """F_L と F_S の双方向線形回帰 R² を計算する。
 
-    Train/test split prevents overfitting artifacts in high-dimensional settings.
-    Ridge regression is available to handle near-collinear features.
+    なぜ train/test split を入れるか:
+      高次元特徴量では訓練データへの過適合が起きやすく、
+      R² が見かけ上高くなって包含の強さを過大評価してしまう。
+      テストセットで評価することで汎化を確認する。
 
-    Returns LinearMetrics with R², MSE, and directional_gap.
+    Ridge 回帰は近似共線的な特徴量を扱う場合のオプション。
     """
     F_L_train, F_L_test, F_S_train, F_S_test = train_test_split(
         F_L, F_S, test_size=test_size, random_state=random_state
@@ -234,10 +245,10 @@ def _fit_and_eval(
     use_ridge: bool,
     alpha: float,
 ) -> tuple[float, float]:
-    """Fit regression X→Y and evaluate on held-out test set.
+    """X→Y の回帰をフィットし、ホールドアウトテストセットで評価する。
 
-    Why: Evaluating on test set ensures the R² reflects generalization,
-    not memorization of training features.
+    なぜテストセットで評価するか:
+      訓練データで R² を測ると過適合の影響で実際の汎化能力より高く見える。
     """
     reg = Ridge(alpha=alpha) if use_ridge else LinearRegression()
     reg.fit(X_train, Y_train)
@@ -256,7 +267,7 @@ def _fit_and_eval(
 class GeometricMetrics:
     cka: float
     rsa_spearman: float
-    mutual_knn: dict[int, float]  # k -> overlap rate
+    mutual_knn: dict[int, float]  # k -> 重なり率
 
 
 def compute_geometric_metrics(
@@ -272,11 +283,11 @@ def compute_geometric_metrics(
 
 
 def compute_cka(F_L: np.ndarray, F_S: np.ndarray) -> float:
-    """Linear CKA between F_L and F_S.
+    """F_L と F_S の線形 CKA を計算する。
 
-    Why: CKA is invariant to orthogonal transforms and isotropic scaling,
-    making it a principled measure of representational similarity that doesn't
-    penalize rotations. (Kornblith et al., 2019)
+    なぜ CKA を使うか:
+      直交変換・等方スケーリングに対して不変であり、
+      座標系の違いで罰せられない原理的な表現類似度の尺度となる。（Kornblith et al., 2019）
     """
     K = _gram(F_L)
     L = _gram(F_S)
@@ -293,9 +304,10 @@ def _gram(F: np.ndarray) -> np.ndarray:
 
 
 def _hsic(K: np.ndarray, L: np.ndarray) -> float:
-    """Unbiased HSIC estimator via centered Gram matrices.
+    """中心化 Gram 行列による不偏 HSIC 推定量。
 
-    Why: Centering removes the mean effect, isolating covariance structure.
+    なぜ中心化するか:
+      中心化によって平均の影響を取り除き、共分散構造のみを取り出す。
     """
     n = K.shape[0]
     H = np.eye(n) - np.ones((n, n)) / n
@@ -305,10 +317,10 @@ def _hsic(K: np.ndarray, L: np.ndarray) -> float:
 
 
 def compute_rsa(F_L: np.ndarray, F_S: np.ndarray) -> float:
-    """Representational Similarity Analysis: Spearman correlation of RDMs.
+    """表現類似性分析（RSA）: RDM の Spearman 相関。
 
-    Why: RSA compares rank-order structure of pairwise distances, which is
-    insensitive to monotone transformations and captures relational geometry.
+    なぜ RSA を使うか:
+      ペアワイズ距離のランク順構造を比較し、単調変換に頑健な幾何構造を捉える。
     """
     rdm_L = _upper_tri(euclidean_distances(F_L))
     rdm_S = _upper_tri(euclidean_distances(F_S))
@@ -317,21 +329,21 @@ def compute_rsa(F_L: np.ndarray, F_S: np.ndarray) -> float:
 
 
 def _upper_tri(D: np.ndarray) -> np.ndarray:
-    """Extract upper triangle of distance matrix (excluding diagonal)."""
+    """距離行列の上三角部分（対角除く）を抽出する。"""
     idx = np.triu_indices(D.shape[0], k=1)
     return D[idx]
 
 
 def compute_mutual_knn(F_L: np.ndarray, F_S: np.ndarray, k: int) -> float:
-    """Mutual k-NN overlap: fraction of k nearest neighbors shared across spaces.
+    """Mutual k-NN 重なり率: 両空間で共有される k 近傍の割合。
 
-    Why: kNN overlap tests whether local neighborhoods are consistent between
-    models. High overlap means the models agree on which samples are "close,"
-    even if their coordinates differ. (Huh et al., 2024)
+    なぜ mutual kNN を使うか:
+      座標が異なっていても「どのサンプルが近いか」という局所的な
+      近傍構造がモデル間で一致するかを直接測定する。（Huh et al., 2024）
     """
     n = F_L.shape[0]
     if k >= n:
-        raise ValueError(f"k={k} must be less than n_samples={n}")
+        raise ValueError(f"k={k} は n_samples={n} より小さくなければなりません")
 
     nn_L = _knn_indices(F_L, k)
     nn_S = _knn_indices(F_S, k)
@@ -344,9 +356,9 @@ def compute_mutual_knn(F_L: np.ndarray, F_S: np.ndarray, k: int) -> float:
 
 
 def _knn_indices(F: np.ndarray, k: int) -> np.ndarray:
-    """Return (n, k) array of k nearest neighbor indices (excluding self)."""
+    """各サンプルの k 近傍インデックスを返す（自分自身を除く）。shape: (n, k)"""
     D = euclidean_distances(F)
-    np.fill_diagonal(D, np.inf)
+    np.fill_diagonal(D, np.inf)  # 自分自身を近傍候補から除外する
     return np.argsort(D, axis=1)[:, :k]
 
 
@@ -381,12 +393,14 @@ def compute_subspace_metrics(
 
     for r in n_components_list:
         if same_dim:
+            # 共通環境空間での直接射影
             r_eff = min(r, V_L_full.shape[1], V_S_full.shape[1])
             V_L = V_L_full[:, :r_eff]
             V_S = V_S_full[:, :r_eff]
             c_s_in_l = _subspace_containment(V_S, V_L)
             c_l_in_s = _subspace_containment(V_L, V_S)
         else:
+            # 次元が異なる場合: データを介した R² で包含度を代替測定する
             r_eff = min(r, V_L_full.shape[1], V_S_full.shape[1])
             V_L = V_L_full[:, :r_eff]
             V_S = V_S_full[:, :r_eff]
@@ -407,9 +421,12 @@ def compute_subspace_metrics(
 
 
 def _regression_r2(X: np.ndarray, Y: np.ndarray) -> float:
-    """Fraction of Y's variance explained by a linear function of X (in-sample R²).
+    """X の線形関数で Y の分散をどれだけ説明できるかを in-sample R² で測る。
 
-    Used for cross-dimension subspace containment when d_L != d_S.
+    なぜここでは in-sample R² を使うか:
+      サブスペース包含は汎化特性ではなく幾何的特性を問うている。
+      PCA スコアのターゲットは構成上単位分散を持つため、
+      in-sample R² が包含度の tight な代理指標となる。
     """
     reg = LinearRegression(fit_intercept=False)
     reg.fit(X, Y)
@@ -426,12 +443,11 @@ def _center(F: np.ndarray) -> np.ndarray:
 
 
 def _top_components(F_centered: np.ndarray, r: int) -> np.ndarray:
-    """Extract top-r right singular vectors via SVD.
+    """SVD で上位 r 右特異ベクトルを抽出する。
 
-    Why: SVD on the centered feature matrix gives principal components without
-    explicitly computing the covariance matrix, which is more numerically stable
-    for high-dimensional features.
-    Returns V of shape (d, r).
+    なぜ共分散行列ではなく SVD を使うか:
+      高次元特徴量で共分散行列を明示的に計算すると数値的に不安定になる。
+    戻り値の shape: (d, r)
     """
     r_eff = min(r, min(F_centered.shape))
     _, _, Vt = np.linalg.svd(F_centered, full_matrices=False)
@@ -439,15 +455,15 @@ def _top_components(F_centered: np.ndarray, r: int) -> np.ndarray:
 
 
 def _subspace_containment(V_query: np.ndarray, V_base: np.ndarray) -> float:
-    """Measure how much of V_query's column space lies in V_base's column space.
+    """V_query の列空間が V_base の列空間にどれだけ含まれるかを測る。
 
-    Formula: ||P_{V_base} V_query||_F^2 / ||V_query||_F^2
+    計算式: ||P_{V_base} V_query||_F^2 / ||V_query||_F^2
 
-    Why: The Frobenius norm of the projection quantifies the total "energy" of
-    V_query that is explainable by V_base directions. Value of 1 means complete
-    containment; 0 means orthogonal subspaces.
+    なぜ Frobenius ノルムで測るか:
+      射影の Frobenius ノルムは、V_query の「エネルギー」のうち
+      V_base の方向で説明できる割合を定量化する。1 = 完全包含、0 = 直交。
 
-    Assumes columns of V_base are orthonormal (from SVD).
+    前提: V_base の列は SVD により正規直交である。
     """
     proj = V_base @ (V_base.T @ V_query)
     numerator = float(np.linalg.norm(proj, "fro") ** 2)
@@ -473,36 +489,36 @@ def generate_report(
     output_path: str,
     layer_results: list[dict] | None = None,
 ) -> str:
-    """Build and write Markdown summary report.
+    """Markdown サマリーレポートを構築してファイルに書き出す。
 
-    Returns the report string for further use.
+    戻り値: レポート文字列（後続の処理でも利用できるよう返す）。
     """
     lines = []
     exp = cfg.get("experiment", {})
 
     lines += [
-        "# Representation Subsumption Analysis",
+        "# Representation Subsumption 分析レポート",
         "",
-        f"**Date**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
-        f"**Experiment**: {exp.get('name', 'N/A')}",
-        f"**Large model**: `{exp.get('large_model', 'N/A')}`",
-        f"**Small model**: `{exp.get('small_model', 'N/A')}`",
+        f"**日時**: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+        f"**実験名**: {exp.get('name', 'N/A')}",
+        f"**Large モデル**: `{exp.get('large_model', 'N/A')}`",
+        f"**Small モデル**: `{exp.get('small_model', 'N/A')}`",
         "",
-        "## Dataset",
+        "## データセット",
         "",
-        "| Key | Value |",
-        "|-----|-------|",
-        f"| Samples | {n_samples} |",
+        "| 項目 | 値 |",
+        "|------|---|",
+        f"| サンプル数 | {n_samples} |",
         f"| d_L | {d_L} |",
         f"| d_S | {d_S} |",
         "",
     ]
 
     lines += [
-        "## Linear Containment",
+        "## 線形包含",
         "",
-        "| Metric | Value |",
-        "|--------|-------|",
+        "| 指標 | 値 |",
+        "|------|---|",
         f"| R²_L→S | {linear.r2_l_to_s:.4f} |",
         f"| R²_S→L | {linear.r2_s_to_l:.4f} |",
         f"| MSE_L→S | {linear.mse_l_to_s:.6f} |",
@@ -512,10 +528,10 @@ def generate_report(
     ]
 
     lines += [
-        "## Geometric Alignment",
+        "## 幾何的整合",
         "",
-        "| Metric | Value |",
-        "|--------|-------|",
+        "| 指標 | 値 |",
+        "|------|---|",
         f"| CKA | {geometry.cka:.4f} |",
         f"| RSA (Spearman ρ) | {geometry.rsa_spearman:.4f} |",
     ]
@@ -524,7 +540,7 @@ def generate_report(
     lines.append("")
 
     lines += [
-        "## Subspace Containment",
+        "## 部分空間包含",
         "",
         "| r | S_in_L | L_in_S | Gap (S_in_L − L_in_S) |",
         "|---|--------|--------|------------------------|",
@@ -554,42 +570,42 @@ def _interpretation_block(
     geometry: GeometricMetrics,
     subspace: SubspaceMetrics,
 ) -> list[str]:
-    lines = ["## Key Observations", ""]
+    lines = ["## 主要な観察", ""]
 
     if linear.r2_l_to_s > 0.9 and linear.r2_s_to_l < 0.5:
-        obs = "Large linearly subsumes Small (high R²_L→S, low R²_S→L)."
+        obs = "Large が Small を線形的に包含しています（R²_L→S が高く R²_S→L が低い）。"
     elif linear.r2_l_to_s > 0.8 and linear.r2_s_to_l > 0.8:
-        obs = "Both directions high: representations are nearly isomorphic."
+        obs = "両方向とも高い: 表現はほぼ同型です。"
     elif linear.r2_l_to_s > 0.5 and linear.r2_s_to_l > 0.5:
-        obs = "Moderate bidirectional R²: shared components exist but no full containment."
+        obs = "双方向 R² が中程度: 共有成分はあるが完全包含ではありません。"
     else:
-        obs = "Low R²_L→S: Small has components not linearly explained by Large."
-    lines += [f"- **Linear**: {obs}"]
+        obs = "R²_L→S が低い: Small には Large から線形説明できない成分があります。"
+    lines += [f"- **線形**: {obs}"]
 
     if geometry.cka > 0.9:
-        lines += ["- **CKA**: Very high — representations are geometrically similar."]
+        lines += ["- **CKA**: 非常に高い — 表現は幾何的に類似しています。"]
     elif geometry.cka > 0.6:
-        lines += ["- **CKA**: Moderate — partial geometric alignment."]
+        lines += ["- **CKA**: 中程度 — 部分的な幾何的整合があります。"]
     else:
-        lines += ["- **CKA**: Low — representations differ in geometry."]
+        lines += ["- **CKA**: 低い — 表現の幾何構造が異なります。"]
 
     max_r = max(subspace.containment_s_in_l)
     c_s_in_l = subspace.containment_s_in_l[max_r]
     if c_s_in_l > 0.9:
-        lines += [f"- **Subspace (r={max_r})**: Small's principal directions are well-contained in Large."]
+        lines += [f"- **部分空間 (r={max_r})**: Small の主方向は Large の空間によく含まれています。"]
     elif c_s_in_l > 0.6:
-        lines += [f"- **Subspace (r={max_r})**: Partial containment of Small in Large."]
+        lines += [f"- **部分空間 (r={max_r})**: Small の Large への部分的な包含があります。"]
     else:
-        lines += [f"- **Subspace (r={max_r})**: Small has principal directions outside Large's subspace."]
+        lines += [f"- **部分空間 (r={max_r})**: Small には Large の部分空間外の主方向が存在します。"]
 
     lines.append("")
     return lines
 
 
 def _layer_results_section(layer_results: list[dict]) -> list[str]:
-    lines = ["## Layer-Pair Analysis", ""]
-    lines += ["| Large Layer | Small Layer | R²_L→S | R²_S→L | CKA | RSA | kNN@10 |"]
-    lines += ["|-------------|-------------|--------|--------|-----|-----|--------|"]
+    lines = ["## 層ペア分析", ""]
+    lines += ["| Large 層 | Small 層 | R²_L→S | R²_S→L | CKA | RSA | kNN@10 |"]
+    lines += ["|----------|----------|--------|--------|-----|-----|--------|"]
     for r in layer_results:
         lines.append(
             f"| {r['large_layer']} | {r['small_layer']} | "
@@ -602,16 +618,16 @@ def _layer_results_section(layer_results: list[dict]) -> list[str]:
 
 
 # ---------------------------------------------------------------------------
-# figures
+# 図の生成
 # ---------------------------------------------------------------------------
 
 
 def make_figures(linear: LinearMetrics, geometry: GeometricMetrics, subspace: SubspaceMetrics, figs_dir: str) -> None:
-    """Generate and save analysis figures. Requires matplotlib."""
+    """分析図を生成して保存する。matplotlib が必要。"""
     import matplotlib.pyplot as plt
     out = Path(figs_dir)
 
-    # Directional gap bar chart
+    # 方向性ギャップの棒グラフ
     fig, ax = plt.subplots(figsize=(5, 4))
     labels = ["R²_L→S", "R²_S→L", "Gap"]
     values = [linear.r2_l_to_s, linear.r2_s_to_l, linear.directional_gap]
@@ -619,67 +635,67 @@ def make_figures(linear: LinearMetrics, geometry: GeometricMetrics, subspace: Su
     ax.bar(labels, values, color=colors)
     ax.set_ylim(-1, 1)
     ax.axhline(0, color="black", linewidth=0.8, linestyle="--")
-    ax.set_title("Linear Containment: Directional R²")
+    ax.set_title("線形包含: 方向性 R²")
     ax.set_ylabel("R²")
     fig.tight_layout()
     fig.savefig(out / "linear_directional_gap.png", dpi=150)
     plt.close(fig)
 
-    # Subspace containment line chart
+    # 部分空間包含の折れ線グラフ
     rs = sorted(subspace.containment_s_in_l)
     s_in_l = [subspace.containment_s_in_l[r] for r in rs]
     l_in_s = [subspace.containment_l_in_s[r] for r in rs]
     fig, ax = plt.subplots(figsize=(6, 4))
     ax.plot(rs, s_in_l, marker="o", label="Small in Large")
     ax.plot(rs, l_in_s, marker="s", label="Large in Small")
-    ax.set_xlabel("r (# components)")
-    ax.set_ylabel("Containment")
-    ax.set_title("Subspace Containment vs. r")
+    ax.set_xlabel("r（主成分数）")
+    ax.set_ylabel("包含度")
+    ax.set_title("部分空間包含度 vs. r")
     ax.legend()
     ax.set_ylim(0, 1.05)
     fig.tight_layout()
     fig.savefig(out / "subspace_containment.png", dpi=150)
     plt.close(fig)
 
-    # mutual kNN line chart
+    # mutual kNN の折れ線グラフ
     ks = sorted(geometry.mutual_knn)
     knn_vals = [geometry.mutual_knn[k] for k in ks]
     fig, ax = plt.subplots(figsize=(5, 4))
     ax.plot(ks, knn_vals, marker="o", color="darkorchid")
     ax.set_xlabel("k")
-    ax.set_ylabel("mutual kNN overlap")
-    ax.set_title("Mutual kNN Overlap vs. k")
+    ax.set_ylabel("mutual kNN 重なり率")
+    ax.set_title("Mutual kNN 重なり率 vs. k")
     ax.set_ylim(0, 1.05)
     fig.tight_layout()
     fig.savefig(out / "mutual_knn.png", dpi=150)
     plt.close(fig)
 
-    logger.info(f"Figures saved to {out}")
+    logger.info(f"図を保存しました: {out}")
 
 
 # ---------------------------------------------------------------------------
-# CLI entry point
+# CLI エントリーポイント
 # ---------------------------------------------------------------------------
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(
-        description="Representation Subsumption Analysis (single-file mode)"
+        description="Representation Subsumption 分析（単一ファイルモード）"
     )
-    p.add_argument("--large", required=True, help="Path to large model features (.pt/.npy/.npz)")
-    p.add_argument("--small", required=True, help="Path to small model features (.pt/.npy/.npz)")
-    p.add_argument("--large-model", default="large", help="Name label for large model")
-    p.add_argument("--small-model", default="small", help="Name label for small model")
-    p.add_argument("--output-dir", default="results", help="Root output directory")
-    p.add_argument("--knn-k", nargs="+", type=int, default=[5, 10, 20], help="k values for mutual kNN")
+    p.add_argument("--large", required=True, help="Large モデルの特徴量ファイルパス（.pt/.npy/.npz）")
+    p.add_argument("--small", required=True, help="Small モデルの特徴量ファイルパス（.pt/.npy/.npz）")
+    p.add_argument("--large-model", default="large", help="Large モデルの名前ラベル")
+    p.add_argument("--small-model", default="small", help="Small モデルの名前ラベル")
+    p.add_argument("--output-dir", default="results", help="結果出力のルートディレクトリ")
+    p.add_argument("--knn-k", nargs="+", type=int, default=[5, 10, 20], help="mutual kNN の k 値リスト")
     p.add_argument("--n-components", nargs="+", type=int, default=[16, 32, 64, 128],
-                   help="Number of PCA components for subspace analysis")
-    p.add_argument("--test-size", type=float, default=0.2, help="Train/test split ratio for linear metrics")
-    p.add_argument("--ridge", action="store_true", help="Use Ridge regression instead of OLS")
-    p.add_argument("--ridge-alpha", type=float, default=1.0, help="Ridge regularization strength")
+                   help="部分空間分析の PCA 主成分数リスト")
+    p.add_argument("--test-size", type=float, default=0.2, help="線形指標の train/test 分割比率")
+    p.add_argument("--ridge", action="store_true", help="OLS の代わりに Ridge 回帰を使用する")
+    p.add_argument("--ridge-alpha", type=float, default=1.0, help="Ridge の正則化強度")
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--debug", action="store_true")
-    p.add_argument("--figures", action="store_true", help="Generate figures (requires matplotlib)")
+    p.add_argument("--figures", action="store_true", help="図を生成する（matplotlib が必要）")
     return p.parse_args()
 
 
@@ -699,7 +715,7 @@ def main() -> None:
     F_L, F_S = align_features(large_feat, small_feat)
     n_samples, d_L = F_L.shape
     d_S = F_S.shape[1]
-    logger.info(f"Analysis: n={n_samples}, d_L={d_L}, d_S={d_S}")
+    logger.info(f"分析対象: n={n_samples}, d_L={d_L}, d_S={d_S}")
 
     linear = compute_linear_metrics(
         F_L, F_S,
@@ -708,10 +724,10 @@ def main() -> None:
         use_ridge=args.ridge,
         ridge_alpha=args.ridge_alpha,
     )
-    logger.info(f"Linear: R²_L→S={linear.r2_l_to_s:.4f}, R²_S→L={linear.r2_s_to_l:.4f}, gap={linear.directional_gap:.4f}")
+    logger.info(f"線形: R²_L→S={linear.r2_l_to_s:.4f}, R²_S→L={linear.r2_s_to_l:.4f}, gap={linear.directional_gap:.4f}")
 
     geometry = compute_geometric_metrics(F_L, F_S, knn_ks=args.knn_k)
-    logger.info(f"Geometry: CKA={geometry.cka:.4f}, RSA={geometry.rsa_spearman:.4f}")
+    logger.info(f"幾何: CKA={geometry.cka:.4f}, RSA={geometry.rsa_spearman:.4f}")
 
     subspace = compute_subspace_metrics(F_L, F_S, n_components_list=args.n_components)
 
@@ -735,13 +751,13 @@ def main() -> None:
     )
 
     print(report)
-    logger.info(f"Report written to {report_path}")
+    logger.info(f"レポートを出力しました: {report_path}")
 
     if args.figures:
         try:
             make_figures(linear, geometry, subspace, figures_dir)
         except ImportError:
-            logger.warning("matplotlib not available; skipping figures.")
+            logger.warning("matplotlib が見つかりません。図の生成をスキップします。")
 
 
 if __name__ == "__main__":

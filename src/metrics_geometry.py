@@ -1,10 +1,10 @@
 """
-Geometric alignment metrics: CKA, RSA, mutual kNN.
+幾何的整合指標: CKA, RSA, mutual kNN。
 
-Why: Linear regression measures coordinate-level recovery, but two representations
-can be geometrically equivalent under a rotation (CKA) or preserve rank-order
-distances (RSA) without being linearly predictable. Mutual kNN directly measures
-whether each sample's neighborhood is consistent across models.
+なぜ線形回帰に加えてこれらが必要か:
+  線形回帰は座標レベルの復元を測るが、表現が回転的に等価な場合（CKA）や
+  距離のランク順を保つ場合（RSA）は線形予測できなくても幾何的には整合している。
+  Mutual kNN は各サンプルの近傍が両モデルで一致するかを直接測定する。
 """
 
 from dataclasses import dataclass
@@ -17,7 +17,7 @@ from sklearn.metrics.pairwise import euclidean_distances
 class GeometricMetrics:
     cka: float
     rsa_spearman: float
-    mutual_knn: dict[int, float]  # k -> overlap rate
+    mutual_knn: dict[int, float]  # k -> 重なり率
 
 
 def compute_geometric_metrics(
@@ -33,11 +33,11 @@ def compute_geometric_metrics(
 
 
 def compute_cka(F_L: np.ndarray, F_S: np.ndarray) -> float:
-    """Linear CKA between F_L and F_S.
+    """F_L と F_S の線形 CKA を計算する。
 
-    Why: CKA is invariant to orthogonal transforms and isotropic scaling,
-    making it a principled measure of representational similarity that doesn't
-    penalize rotations. (Kornblith et al., 2019)
+    なぜ CKA を使うか:
+      CKA は直交変換・等方スケーリングに対して不変であり、
+      座標系の違いで罰せられない原理的な表現類似度の尺度となる。（Kornblith et al., 2019）
     """
     K = _gram(F_L)
     L = _gram(F_S)
@@ -54,9 +54,10 @@ def _gram(F: np.ndarray) -> np.ndarray:
 
 
 def _hsic(K: np.ndarray, L: np.ndarray) -> float:
-    """Unbiased HSIC estimator via centered Gram matrices.
+    """中心化 Gram 行列による不偏 HSIC 推定量。
 
-    Why: Centering removes the mean effect, isolating covariance structure.
+    なぜ中心化するか:
+      中心化によって平均の影響を取り除き、共分散構造のみを取り出す。
     """
     n = K.shape[0]
     H = np.eye(n) - np.ones((n, n)) / n
@@ -66,10 +67,11 @@ def _hsic(K: np.ndarray, L: np.ndarray) -> float:
 
 
 def compute_rsa(F_L: np.ndarray, F_S: np.ndarray) -> float:
-    """Representational Similarity Analysis: Spearman correlation of RDMs.
+    """表現類似性分析（RSA）: RDM の Spearman 相関。
 
-    Why: RSA compares rank-order structure of pairwise distances, which is
-    insensitive to monotone transformations and captures relational geometry.
+    なぜ RSA を使うか:
+      RSA はペアワイズ距離のランク順構造を比較する。
+      単調変換に対して頑健であり、関係的な幾何構造を捉える。
     """
     rdm_L = _upper_tri(euclidean_distances(F_L))
     rdm_S = _upper_tri(euclidean_distances(F_S))
@@ -78,21 +80,21 @@ def compute_rsa(F_L: np.ndarray, F_S: np.ndarray) -> float:
 
 
 def _upper_tri(D: np.ndarray) -> np.ndarray:
-    """Extract upper triangle of distance matrix (excluding diagonal)."""
+    """距離行列の上三角部分（対角除く）を抽出する。"""
     idx = np.triu_indices(D.shape[0], k=1)
     return D[idx]
 
 
 def compute_mutual_knn(F_L: np.ndarray, F_S: np.ndarray, k: int) -> float:
-    """Mutual k-NN overlap: fraction of k nearest neighbors shared across spaces.
+    """Mutual k-NN 重なり率: 両空間で共有される k 近傍の割合。
 
-    Why: kNN overlap tests whether local neighborhoods are consistent between
-    models. High overlap means the models agree on which samples are "close,"
-    even if their coordinates differ. (Huh et al., 2024)
+    なぜ mutual kNN を使うか:
+      kNN の重なりは、座標が異なっていても「どのサンプルが近いか」という
+      局所的な近傍構造がモデル間で一致するかを直接測定する。（Huh et al., 2024）
     """
     n = F_L.shape[0]
     if k >= n:
-        raise ValueError(f"k={k} must be less than n_samples={n}")
+        raise ValueError(f"k={k} は n_samples={n} より小さくなければなりません")
 
     nn_L = _knn_indices(F_L, k)
     nn_S = _knn_indices(F_S, k)
@@ -105,7 +107,7 @@ def compute_mutual_knn(F_L: np.ndarray, F_S: np.ndarray, k: int) -> float:
 
 
 def _knn_indices(F: np.ndarray, k: int) -> np.ndarray:
-    """Return (n, k) array of k nearest neighbor indices (excluding self)."""
+    """各サンプルの k 近傍インデックスを返す（自分自身を除く）。shape: (n, k)"""
     D = euclidean_distances(F)
-    np.fill_diagonal(D, np.inf)  # exclude self
+    np.fill_diagonal(D, np.inf)  # 自分自身を近傍候補から除外する
     return np.argsort(D, axis=1)[:, :k]
