@@ -991,52 +991,111 @@ def _build_reducer_inline(
     seed: int,
     pca_pre_dim: int = 50,
 ) -> tuple[np.ndarray, str]:
-    """Fit a 2D reducer on X_joint and return coords + method name."""
+    """Fit a 2D UMAP/PCA reducer on X_joint. Returns (coords_2d, method_name)."""
     from sklearn.decomposition import PCA
     from sklearn.preprocessing import StandardScaler
 
-    scaler = StandardScaler()
-    X_scaled = scaler.fit_transform(X_joint)
-
-    n_samples_j, n_features_j = X_joint.shape
+    X_scaled = StandardScaler().fit_transform(X_joint)
+    n_samples_j, n_features_j = X_scaled.shape
     effective_pre_dim = min(pca_pre_dim, n_samples_j - 1, n_features_j - 1)
     if n_features_j > effective_pre_dim and effective_pre_dim >= 2:
-        pca_pre = PCA(n_components=effective_pre_dim, random_state=seed)
-        X_scaled = pca_pre.fit_transform(X_scaled)
+        X_scaled = PCA(n_components=effective_pre_dim, random_state=seed).fit_transform(X_scaled)
 
     try:
-        import umap
-        reducer = umap.UMAP(n_components=2, random_state=seed, n_neighbors=15, min_dist=0.1)
-        coords_2d = reducer.fit_transform(X_scaled)
+        import umap  # noqa: PLC0415
+        coords_2d = umap.UMAP(
+            n_components=2, random_state=seed, n_neighbors=15, min_dist=0.1
+        ).fit_transform(X_scaled)
         method_name = "UMAP"
     except ImportError:
         logger.warning("umap-learn not installed, falling back to PCA for visualization.")
-        reducer = PCA(n_components=2, random_state=seed)
-        coords_2d = reducer.fit_transform(X_scaled)
+        coords_2d = PCA(n_components=2, random_state=seed).fit_transform(X_scaled)
         method_name = "PCA"
 
     return coords_2d, method_name
 
 
-def _compute_geometry_aux_metrics_inline(
+def _compute_cca_coords_inline(
     F_L: np.ndarray,
-    F_PL: np.ndarray,
+    F_S: np.ndarray,
+    cca: CCAMetrics,
+    seed: int,
+    pca_pre_dim: int,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray, str]:
+    """CCA projection + UMAP for Panel A.
+
+    Returns: (coords_L, coords_S, Z_L, Z_S, method_name)
+    """
+    mean_L = cca.mean_L.astype(np.float64)
+    mean_S = cca.mean_S.astype(np.float64)
+    std_L = cca.std_L.astype(np.float64) if cca.std_L is not None else None
+    std_S = cca.std_S.astype(np.float64) if cca.std_S is not None else None
+    W_L = cca.W_L.astype(np.float64)
+    W_S = cca.W_S.astype(np.float64)
+
+    Z_L = _project_cca_inline(F_L, mean_L, std_L, W_L)
+    Z_S = _project_cca_inline(F_S, mean_S, std_S, W_S)
+
+    n = len(Z_L)
+    coords, method_name = _build_reducer_inline(
+        np.concatenate([Z_L, Z_S], axis=0), seed=seed, pca_pre_dim=pca_pre_dim
+    )
+    return coords[:n], coords[n:], Z_L, Z_S, method_name
+
+
+def _compute_joint_umap_coords_inline(
+    F_L: np.ndarray,
+    F_S: np.ndarray,
+    seed: int,
+    pca_pre_dim: int = 50,
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, str]:
+    """Joint PCA→UMAP without any alignment objective (bias-free).
+
+    Each of F_L, F_S is independently standardized + PCA-reduced,
+    then concatenated and fed to UMAP jointly — no correlation maximization.
+
+    Returns: (coords_L, coords_S, pair_dists, method_name)
+    """
+    from sklearn.decomposition import PCA
+    from sklearn.preprocessing import StandardScaler
+
+    n = len(F_L)
+    pca_dim = min(pca_pre_dim, n - 1, F_L.shape[1] - 1, F_S.shape[1] - 1)
+    pca_dim = max(pca_dim, 2)
+
+    F_L_pca = PCA(n_components=pca_dim, random_state=seed).fit_transform(
+        StandardScaler().fit_transform(F_L)
+    )
+    F_S_pca = PCA(n_components=pca_dim, random_state=seed).fit_transform(
+        StandardScaler().fit_transform(F_S)
+    )
+
+    X_joint = np.concatenate([F_L_pca, F_S_pca], axis=0)
+    try:
+        import umap  # noqa: PLC0415
+        coords_2d = umap.UMAP(
+            n_components=2, random_state=seed, n_neighbors=15, min_dist=0.1
+        ).fit_transform(X_joint)
+        method_name = "UMAP"
+    except ImportError:
+        coords_2d = PCA(n_components=2, random_state=seed).fit_transform(X_joint)
+        method_name = "PCA"
+
+    coords_L = coords_2d[:n]
+    coords_S = coords_2d[n:]
+    pair_dists = np.linalg.norm(coords_L - coords_S, axis=1)
+    return coords_L, coords_S, pair_dists, method_name
+
+
+def _compute_geometry_aux_metrics_inline(
     Z_L: np.ndarray,
     Z_S: np.ndarray,
+    pair_dists_joint: np.ndarray | None = None,
 ) -> dict:
-    """Compute auxiliary geometry metrics."""
-    from scipy.spatial.distance import cdist
-
-    centroid_L = F_L.mean(axis=0)
-    centroid_PL = F_PL.mean(axis=0)
-    centroid_dist_L_PL = float(np.linalg.norm(centroid_L - centroid_PL))
-
-    centroid_ZL = Z_L.mean(axis=0)
-    centroid_ZS = Z_S.mean(axis=0)
-    centroid_dist_merge_ZL_ZS = float(np.linalg.norm(centroid_ZL - centroid_ZS))
-
-    dists = cdist(F_L, F_PL)
-    mean_nn_dist_L_PL = float(dists.min(axis=1).mean())
+    """Compute auxiliary geometry metrics (pseudo-Large removed)."""
+    centroid_dist_merge_ZL_ZS = float(
+        np.linalg.norm(Z_L.mean(axis=0) - Z_S.mean(axis=0))
+    )
 
     try:
         from sklearn.metrics import silhouette_score
@@ -1046,12 +1105,13 @@ def _compute_geometry_aux_metrics_inline(
     except Exception:
         silhouette_merge = float("nan")
 
-    return {
-        "centroid_dist_L_PL": centroid_dist_L_PL,
+    result = {
         "centroid_dist_merge_ZL_ZS": centroid_dist_merge_ZL_ZS,
-        "mean_nn_dist_L_PL": mean_nn_dist_L_PL,
         "silhouette_merge": silhouette_merge,
     }
+    if pair_dists_joint is not None:
+        result["mean_pair_dist_joint_umap"] = float(pair_dists_joint.mean())
+    return result
 
 
 def _draw_scatter_inline(
@@ -1072,90 +1132,88 @@ def _draw_scatter_inline(
         if len(c0) == len(c1):
             for i in range(len(c0)):
                 ax.plot(
-                    [c0[i, 0], c1[i, 0]],
-                    [c0[i, 1], c1[i, 1]],
-                    color="gray", alpha=0.2, linewidth=0.5, zorder=0,
+                    [c0[i, 0], c1[i, 0]], [c0[i, 1], c1[i, 1]],
+                    color="gray", alpha=0.25, linewidth=0.5, zorder=0,
                 )
 
     for coords, label, color in zip(coords_list, labels_list, colors):
         if point_labels is not None and len(point_labels) == len(coords):
-            unique_cls = sorted(set(point_labels.tolist()))
-            for cls_i, cls in enumerate(unique_cls[:5]):
+            for cls_i, cls in enumerate(sorted(set(point_labels.tolist()))[:5]):
                 mask = (point_labels == cls)
-                marker = markers[cls_i % len(markers)]
                 ax.scatter(
                     coords[mask, 0], coords[mask, 1],
-                    c=color, marker=marker, alpha=0.6, s=20,
+                    c=color, marker=markers[cls_i % len(markers)],
+                    alpha=0.6, s=20,
                     label=f"{label} (cls {cls})" if cls_i == 0 else None,
                 )
         else:
-            ax.scatter(
-                coords[:, 0], coords[:, 1],
-                c=color, alpha=0.6, s=20, label=label,
-            )
+            ax.scatter(coords[:, 0], coords[:, 1], c=color, alpha=0.6, s=20, label=label)
 
-    ax.set_title(title)
+    ax.set_title(title, fontsize=10)
     ax.set_xlabel(f"{method_name} dim 1")
     ax.set_ylabel(f"{method_name} dim 2")
     ax.legend(fontsize=8)
 
 
-def _compute_panel_coords_inline(
-    F_L_sub: np.ndarray,
-    F_S_sub: np.ndarray,
-    cca: CCAMetrics,
-    reg_s_to_l,
-    seed: int,
-    pca_pre_dim: int,
-) -> tuple:
-    """Compute 2D coordinates for all three panels (inline version).
+def _draw_pair_distance_hist_inline(
+    ax,
+    real_dists: np.ndarray,
+    shuf_dists: np.ndarray | None = None,
+    title: str = "Pair Distance Distribution (Joint UMAP space)",
+) -> None:
+    """Histogram of per-sample pair distances ||coords_L[i] - coords_S[i]||."""
+    bins = min(30, max(10, len(real_dists) // 5))
 
-    Returns:
-        (coords_A_L, coords_A_S, coords_B_L, coords_B_PL,
-         coords_C_L, coords_C_S, Z_L, Z_S, F_PL, method_name)
-    """
-    mean_L = cca.mean_L.astype(np.float64)
-    mean_S = cca.mean_S.astype(np.float64)
-    std_L = cca.std_L.astype(np.float64) if cca.std_L is not None else None
-    std_S = cca.std_S.astype(np.float64) if cca.std_S is not None else None
-    W_L = cca.W_L.astype(np.float64)
-    W_S = cca.W_S.astype(np.float64)
+    ax.hist(real_dists, bins=bins, alpha=0.7, color="steelblue",
+            label=f"Real   mean={real_dists.mean():.3f}")
+    ax.axvline(real_dists.mean(), color="steelblue", linestyle="--", linewidth=1.5)
 
-    Z_L = _project_cca_inline(F_L_sub, mean_L, std_L, W_L)
-    Z_S = _project_cca_inline(F_S_sub, mean_S, std_S, W_S)
-    F_PL = reg_s_to_l.predict(F_S_sub).astype(np.float64)
+    if shuf_dists is not None:
+        ax.hist(shuf_dists, bins=bins, alpha=0.7, color="salmon",
+                label=f"Shuffle  mean={shuf_dists.mean():.3f}")
+        ax.axvline(shuf_dists.mean(), color="salmon", linestyle="--", linewidth=1.5)
+        ratio = real_dists.mean() / (shuf_dists.mean() + 1e-12)
+        ax.set_title(f"{title}\nreal/shuffle mean ratio = {ratio:.3f}", fontsize=9)
+    else:
+        ax.set_title(title, fontsize=10)
 
-    n_L = len(Z_L)
+    ax.set_xlabel("Euclidean distance in Joint UMAP space")
+    ax.set_ylabel("Count")
+    ax.legend(fontsize=8)
 
-    joint_A = np.concatenate([Z_L, Z_S], axis=0)
-    coords_A, method_name = _build_reducer_inline(joint_A, seed=seed, pca_pre_dim=pca_pre_dim)
-    coords_A_L = coords_A[:n_L]
-    coords_A_S = coords_A[n_L:]
 
-    joint_B = np.concatenate([F_L_sub, F_PL], axis=0)
-    coords_B, _ = _build_reducer_inline(joint_B, seed=seed, pca_pre_dim=pca_pre_dim)
-    coords_B_L = coords_B[:n_L]
-    coords_B_PL = coords_B[n_L:]
+def _draw_metrics_text_inline(ax, metrics_real: dict, metrics_shuf: dict | None = None) -> None:
+    """Display geometry metrics as text panel."""
+    ax.axis("off")
 
-    joint_C = np.concatenate([Z_L, Z_S], axis=0)
-    coords_C, _ = _build_reducer_inline(joint_C, seed=seed, pca_pre_dim=pca_pre_dim)
-    coords_C_L = coords_C[:n_L]
-    coords_C_S = coords_C[n_L:]
+    def _fmt(v):
+        return f"{v:.4f}" if isinstance(v, float) and not np.isnan(v) else "N/A"
 
-    return (coords_A_L, coords_A_S, coords_B_L, coords_B_PL,
-            coords_C_L, coords_C_S, Z_L, Z_S, F_PL, method_name)
+    lines = ["── Geometry Metrics ──\n"]
+    for k, v in metrics_real.items():
+        line = f"[Real]    {k}\n  = {_fmt(v)}"
+        if metrics_shuf and k in metrics_shuf:
+            line += f"\n[Shuffle] = {_fmt(metrics_shuf[k])}"
+        lines.append(line)
+
+    ax.text(
+        0.05, 0.95, "\n\n".join(lines),
+        transform=ax.transAxes, va="top", ha="left", fontsize=9,
+        fontfamily="monospace",
+        bbox=dict(boxstyle="round,pad=0.4", facecolor="lightyellow", alpha=0.8),
+    )
 
 
 def visualize_geometry_inline(
     F_L: np.ndarray,
     F_S: np.ndarray,
     cca: CCAMetrics,
-    reg_s_to_l,
+    reg_s_to_l,           # kept for API compatibility, no longer used
     output_dir: str,
     max_points: int = 500,
     seed: int = 42,
     pca_pre_dim: int = 50,
-    draw_connections: bool = False,
+    draw_connections: bool = True,
     labels: np.ndarray | None = None,
     layer_name: str = "",
     shuffle_baseline: bool = True,
@@ -1165,12 +1223,23 @@ def visualize_geometry_inline(
     lambda_L: float = 1e-3,
     lambda_S: float = 1e-3,
     standardize: bool = True,
-    # Linear recompute params
+    # Linear recompute params (kept for API compatibility)
     use_ridge: bool = False,
     ridge_alpha: float = 1.0,
     random_state: int = 42,
 ) -> dict:
-    """Generate geometry visualization figure (inline version, 1×3 or 2×3 with shuffle baseline)."""
+    """Generate geometry visualization figure.
+
+    Panel layout:
+      (A) CCA common space  — Z_L vs Z_S (UMAP after CCA projection)
+      (B) Joint PCA→UMAP   — F_L vs F_S, bias-free, pair connections drawn
+      (C) Pair distance histogram — real vs shuffle in one plot
+
+    Row 2 (when shuffle_baseline=True):
+      (A') CCA space [Shuffle]
+      (B') Joint UMAP [Shuffle]  ← longer pair lines expected
+      [Metrics text summary]
+    """
     import matplotlib
     matplotlib.use("Agg")
     import matplotlib.pyplot as plt
@@ -1180,31 +1249,34 @@ def visualize_geometry_inline(
         logger.warning("cca.W_L is None — skipping geometry visualization.")
         return {}
 
+    # ------------------------------------------------------------------
+    # Subsample
+    # ------------------------------------------------------------------
     n = len(F_L)
     rng = np.random.default_rng(seed)
-    if n > max_points:
-        idx = rng.choice(n, size=max_points, replace=False)
-        idx = np.sort(idx)
-    else:
-        idx = np.arange(n)
-
+    idx = np.sort(rng.choice(n, size=min(max_points, n), replace=False))
     F_L_sub = F_L[idx].astype(np.float64)
     F_S_sub = F_S[idx].astype(np.float64)
     labels_sub = labels[idx] if labels is not None else None
 
-    # Compute real panel coords
-    (coords_A_L, coords_A_S, coords_B_L, coords_B_PL,
-     coords_C_L, coords_C_S, Z_L, Z_S, F_PL, method_name) = _compute_panel_coords_inline(
-        F_L_sub, F_S_sub, cca, reg_s_to_l, seed, pca_pre_dim
+    # ------------------------------------------------------------------
+    # Real data: Panel A (CCA) + Panel B (Joint UMAP)
+    # ------------------------------------------------------------------
+    coords_A_L, coords_A_S, Z_L, Z_S, method_A = _compute_cca_coords_inline(
+        F_L_sub, F_S_sub, cca, seed, pca_pre_dim
+    )
+    coords_B_L, coords_B_S, pair_dists_real, method_B = _compute_joint_umap_coords_inline(
+        F_L_sub, F_S_sub, seed, pca_pre_dim
     )
 
-    # Optionally compute shuffle baseline
-    shuf_coords = None
+    # ------------------------------------------------------------------
+    # Shuffle baseline
+    # ------------------------------------------------------------------
+    shuf_data = None
     if shuffle_baseline:
         try:
             rng_shuf = np.random.default_rng(seed + 999)
-            shuf_order = rng_shuf.permutation(len(F_S_sub))
-            F_S_shuf = F_S_sub[shuf_order]
+            F_S_shuf = F_S_sub[rng_shuf.permutation(len(F_S_sub))]
 
             cca_shuf = compute_cca_metrics(
                 F_L_sub, F_S_shuf,
@@ -1219,125 +1291,111 @@ def visualize_geometry_inline(
                 standardize=standardize,
             )
 
-            if cca_shuf.W_L is None:
-                logger.warning("cca_shuf.W_L is None — skipping shuffle baseline row.")
+            if cca_shuf.W_L is not None:
+                sh_A_L, sh_A_S, sh_Z_L, sh_Z_S, sh_mA = _compute_cca_coords_inline(
+                    F_L_sub, F_S_shuf, cca_shuf, seed, pca_pre_dim
+                )
+                sh_B_L, sh_B_S, pair_dists_shuf, sh_mB = _compute_joint_umap_coords_inline(
+                    F_L_sub, F_S_shuf, seed, pca_pre_dim
+                )
+                shuf_data = dict(
+                    coords_A_L=sh_A_L, coords_A_S=sh_A_S, method_A=sh_mA,
+                    coords_B_L=sh_B_L, coords_B_S=sh_B_S, method_B=sh_mB,
+                    pair_dists=pair_dists_shuf, Z_L=sh_Z_L, Z_S=sh_Z_S,
+                )
             else:
-                reg_shuf = fit_linear_projector(
-                    F_S_shuf, F_L_sub,
-                    use_ridge=use_ridge,
-                    ridge_alpha=ridge_alpha,
-                )
-                shuf_coords = _compute_panel_coords_inline(
-                    F_L_sub, F_S_shuf, cca_shuf, reg_shuf, seed, pca_pre_dim
-                )
+                logger.warning("cca_shuf.W_L is None — skipping shuffle baseline row.")
         except Exception as e:
-            logger.warning(f"シャッフルベースライン計算中にエラー: {e} — スキップします。")
+            logger.warning(f"Shuffle baseline failed: {e} — skipping.")
 
-    # Create figure
-    n_rows = 2 if (shuffle_baseline and shuf_coords is not None) else 1
-    fig_height = 6 * n_rows
-    fig, axes_all = plt.subplots(n_rows, 3, figsize=(18, fig_height))
+    # ------------------------------------------------------------------
+    # Aux metrics
+    # ------------------------------------------------------------------
+    metrics_real = _compute_geometry_aux_metrics_inline(Z_L, Z_S, pair_dists_real)
+    metrics_shuf = (
+        _compute_geometry_aux_metrics_inline(
+            shuf_data["Z_L"], shuf_data["Z_S"], shuf_data["pair_dists"]
+        )
+        if shuf_data is not None else None
+    )
 
-    # Normalize axes to 2D indexing
-    if n_rows == 1:
-        axes_row0 = axes_all
-    else:
-        axes_row0 = axes_all[0]
+    # ------------------------------------------------------------------
+    # Build figure
+    # ------------------------------------------------------------------
+    n_rows = 2 if shuf_data is not None else 1
+    fig, axes_all = plt.subplots(n_rows, 3, figsize=(18, 6 * n_rows))
+    axes_row0 = axes_all if n_rows == 1 else axes_all[0]
 
+    # Row 0 — real data
     _draw_scatter_inline(
-        axes_row0[0],
-        [coords_A_L, coords_A_S],
-        ["Large", "Small"],
+        axes_row0[0], [coords_A_L, coords_A_S], ["Large", "Small"],
         ["steelblue", "salmon"],
-        "(A) CCA Common Space: Large vs Small",
-        method_name,
-        draw_connections=draw_connections,
-        point_labels=labels_sub,
+        "(A) CCA Common Space\nLarge vs Small",
+        method_A, draw_connections=False, point_labels=labels_sub,
     )
-
     _draw_scatter_inline(
-        axes_row0[1],
-        [coords_B_L, coords_B_PL],
-        ["Large", "pseudo-Large (S→L)"],
-        ["steelblue", "mediumseagreen"],
-        "(B) Large Feature Space: Original vs Reconstructed",
-        method_name,
-        draw_connections=draw_connections,
-        point_labels=labels_sub,
+        axes_row0[1], [coords_B_L, coords_B_S], ["Large", "Small"],
+        ["steelblue", "salmon"],
+        f"(B) Joint PCA→{method_B} (bias-free)\nPair lines: short = similar",
+        method_B, draw_connections=draw_connections, point_labels=labels_sub,
     )
-
-    _draw_scatter_inline(
+    _draw_pair_distance_hist_inline(
         axes_row0[2],
-        [coords_C_L, coords_C_S],
-        ["Large", "Small"],
-        ["steelblue", "salmon"],
-        "(C) Merge Space (CCA canonical)",
-        method_name,
-        draw_connections=draw_connections,
-        point_labels=labels_sub,
+        real_dists=pair_dists_real,
+        shuf_dists=shuf_data["pair_dists"] if shuf_data is not None else None,
+        title="(C) Pair Distance: Real vs Shuffle",
     )
 
-    # Row 1: shuffle baseline
-    if n_rows == 2 and shuf_coords is not None:
-        (sc_A_L, sc_A_S, sc_B_L, sc_B_PL,
-         sc_C_L, sc_C_S, _sZ_L, _sZ_S, _sF_PL, shuf_method) = shuf_coords
+    # Row 1 — shuffle baseline
+    if n_rows == 2 and shuf_data is not None:
         axes_row1 = axes_all[1]
-
         _draw_scatter_inline(
             axes_row1[0],
-            [sc_A_L, sc_A_S],
-            ["Large", "Small"],
+            [shuf_data["coords_A_L"], shuf_data["coords_A_S"]], ["Large", "Small"],
             ["steelblue", "salmon"],
-            "(A) CCA Common Space: Large vs Small [Shuffled baseline]",
-            shuf_method,
-            draw_connections=draw_connections,
-            point_labels=labels_sub,
+            "(A') CCA Common Space [Shuffle]\nCorrespondence destroyed",
+            shuf_data["method_A"], draw_connections=False, point_labels=labels_sub,
         )
-
         _draw_scatter_inline(
             axes_row1[1],
-            [sc_B_L, sc_B_PL],
-            ["Large", "pseudo-Large (S→L)"],
-            ["steelblue", "mediumseagreen"],
-            "(B) Large Feature Space: Original vs Reconstructed [Shuffled baseline]",
-            shuf_method,
-            draw_connections=draw_connections,
-            point_labels=labels_sub,
-        )
-
-        _draw_scatter_inline(
-            axes_row1[2],
-            [sc_C_L, sc_C_S],
-            ["Large", "Small"],
+            [shuf_data["coords_B_L"], shuf_data["coords_B_S"]], ["Large", "Small"],
             ["steelblue", "salmon"],
-            "(C) Merge Space (CCA canonical) [Shuffled baseline]",
-            shuf_method,
-            draw_connections=draw_connections,
-            point_labels=labels_sub,
+            f"(B') Joint PCA→{shuf_data['method_B']} [Shuffle]\nLines should be longer than (B)",
+            shuf_data["method_B"], draw_connections=draw_connections, point_labels=labels_sub,
         )
+        _draw_metrics_text_inline(axes_row1[2], metrics_real, metrics_shuf)
 
-    fig.tight_layout()
+    layer_str = f" [{layer_name}]" if layer_name else ""
+    fig.suptitle(
+        f"Representation Geometry{layer_str}\n"
+        f"(B)(C): bias-free Joint PCA→{method_B}  |  "
+        f"(A): CCA projection (structural overlap bias present)",
+        fontsize=11,
+    )
+    fig.tight_layout(rect=[0, 0, 1, 0.96])
 
+    # ------------------------------------------------------------------
+    # Save
+    # ------------------------------------------------------------------
     geo_dir = os.path.join(output_dir, "geometry")
     os.makedirs(geo_dir, exist_ok=True)
 
-    if layer_name:
-        fig_path = os.path.join(geo_dir, f"geometry_umap_{layer_name}.png")
-    else:
-        fig_path = os.path.join(geo_dir, "geometry_umap.png")
-
+    suffix = f"_{layer_name}" if layer_name else ""
+    fig_path = os.path.join(geo_dir, f"geometry_umap{suffix}.png")
     fig.savefig(fig_path, dpi=150, bbox_inches="tight")
     plt.close(fig)
     logger.info(f"幾何可視化図を保存しました: {fig_path}")
 
-    aux = _compute_geometry_aux_metrics_inline(F_L_sub, F_PL, Z_L, Z_S)
-
     metrics_path = os.path.join(geo_dir, "geometry_metrics.txt")
     with open(metrics_path, "w") as mf:
-        for k, v in aux.items():
+        for k, v in metrics_real.items():
             mf.write(f"{k}={v}\n")
+        if metrics_shuf:
+            for k, v in metrics_shuf.items():
+                mf.write(f"shuffle_{k}={v}\n")
+    logger.info(f"Geometry metrics saved: {metrics_path}")
 
-    return aux
+    return metrics_real
 
 
 # ---------------------------------------------------------------------------
@@ -1568,8 +1626,9 @@ def main() -> None:
                 random_state=args.seed,
             )
             logger.info(
-                f"幾何可視化: centroid_dist_L_PL={aux.get('centroid_dist_L_PL', float('nan')):.4f}, "
-                f"silhouette_merge={aux.get('silhouette_merge', float('nan')):.4f}"
+                f"幾何可視化: centroid_dist_ZL_ZS={aux.get('centroid_dist_merge_ZL_ZS', float('nan')):.4f}, "
+                f"silhouette_merge={aux.get('silhouette_merge', float('nan')):.4f}, "
+                f"mean_pair_dist={aux.get('mean_pair_dist_joint_umap', float('nan')):.4f}"
             )
         except Exception as e:
             logger.warning(f"幾何可視化をスキップしました: {e}")
