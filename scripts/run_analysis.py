@@ -82,8 +82,47 @@ def _apply_dry_run(
     return F_L, F_S, cfg
 
 
+def _log_config(cfg: dict, dry_run: bool, dry_run_samples: int) -> None:
+    """実行設定をログに出力する。"""
+    exp = cfg.get("experiment", {})
+    feat = cfg.get("features", {})
+    lin = cfg.get("linear", {})
+    geo = cfg.get("geometry", {})
+    cca = cfg.get("cca", {})
+    out = cfg.get("output", {})
+    logger.info("=" * 50)
+    logger.info("[設定] 実験")
+    logger.info(f"  name         : {exp.get('name', 'N/A')}")
+    logger.info(f"  large_model  : {exp.get('large_model', 'N/A')}")
+    logger.info(f"  small_model  : {exp.get('small_model', 'N/A')}")
+    logger.info("[設定] 特徴量パス")
+    logger.info(f"  large_path   : {feat.get('large_path', 'N/A')}")
+    logger.info(f"  small_path   : {feat.get('small_path', 'N/A')}")
+    logger.info("[設定] 線形包含")
+    logger.info(f"  test_size    : {lin.get('test_size', 0.2)}")
+    logger.info(f"  random_state : {lin.get('random_state', 42)}")
+    logger.info(f"  use_ridge    : {lin.get('use_ridge', False)}")
+    logger.info(f"  ridge_alpha  : {lin.get('ridge_alpha', 1.0)}")
+    logger.info("[設定] 幾何的整合")
+    logger.info(f"  knn_k        : {geo.get('knn_k', [5, 10, 20])}")
+    logger.info("[設定] CCA")
+    logger.info(f"  n_components : {cca.get('n_components', 16)}")
+    logger.info(f"  r_values     : {cca.get('r_values', [4, 8, 16])}")
+    logger.info(f"  lambda_L     : {cca.get('lambda_L', 1e-3)}")
+    logger.info(f"  lambda_S     : {cca.get('lambda_S', 1e-3)}")
+    logger.info(f"  use_regularized: {cca.get('use_regularized', None)}")
+    logger.info(f"  standardize  : {cca.get('standardize', True)}")
+    logger.info("[設定] 出力先")
+    logger.info(f"  figures_dir  : {out.get('figures_dir', 'results/figures')}")
+    logger.info(f"  reports_dir  : {out.get('reports_dir', 'results/reports')}")
+    if dry_run:
+        logger.info(f"[設定] dry-run  : True (samples={dry_run_samples})")
+    logger.info("=" * 50)
+
+
 def run(cfg: dict, dry_run: bool = False, dry_run_samples: int = 5) -> None:
     """設定辞書を受け取り、全指標の計算・レポート生成・図保存を行う。"""
+    _log_config(cfg, dry_run, dry_run_samples)
     out_cfg = cfg.get("output", {})
     utils.ensure_dirs(
         out_cfg.get("figures_dir", "results/figures"),

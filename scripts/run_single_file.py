@@ -1027,10 +1027,40 @@ def _apply_dry_run(
     return F_L, F_S
 
 
+def _log_config(args: argparse.Namespace) -> None:
+    """実行設定をログに出力する。"""
+    logger.info("=" * 50)
+    logger.info("[設定] モデル・データ")
+    logger.info(f"  large_model  : {args.large_model}")
+    logger.info(f"  small_model  : {args.small_model}")
+    logger.info(f"  large_path   : {args.large}")
+    logger.info(f"  small_path   : {args.small}")
+    logger.info(f"  output_dir   : {args.output_dir}")
+    logger.info("[設定] 線形包含")
+    logger.info(f"  test_size    : {args.test_size}")
+    logger.info(f"  seed         : {args.seed}")
+    logger.info(f"  use_ridge    : {args.ridge}")
+    logger.info(f"  ridge_alpha  : {args.ridge_alpha}")
+    logger.info("[設定] 幾何的整合")
+    logger.info(f"  knn_k        : {args.knn_k}")
+    logger.info("[設定] CCA")
+    logger.info(f"  n_components : {args.n_components}")
+    logger.info(f"  r_values     : {args.r_values}")
+    logger.info(f"  lambda_l     : {args.lambda_l}")
+    logger.info(f"  lambda_s     : {args.lambda_s}")
+    logger.info(f"  regularized  : {args.regularized}")
+    logger.info(f"  standardize  : {not args.no_standardize}")
+    if args.dry_run:
+        logger.info(f"[設定] dry-run  : True (samples={args.dry_run_samples})")
+    logger.info("=" * 50)
+
+
 def main() -> None:
     args = parse_args()
     setup_logging(logging.DEBUG if args.debug else logging.INFO)
     set_seed(args.seed)
+
+    _log_config(args)
 
     figures_dir = str(Path(args.output_dir) / "figures")
     tables_dir = str(Path(args.output_dir) / "tables")
