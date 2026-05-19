@@ -14,7 +14,7 @@ linear:
   test_size: 0.2
   random_state: 42
   ridge_alpha: 1.0
-  use_ridge: false
+  use_ridge: true
 
 geometry:
   knn_k: [5, 10, 20]
