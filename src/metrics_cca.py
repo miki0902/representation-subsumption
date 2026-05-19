@@ -15,7 +15,7 @@ CCA / Regularized CCA による共通 merge 空間分析。
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 import numpy as np
 from sklearn.model_selection import train_test_split
@@ -53,6 +53,13 @@ class CCAMetrics:
     lambda_S: float
     # 実際に使用した正準成分数
     n_components: int
+    # Projection matrices (stored for visualization)
+    W_L: np.ndarray | None = field(default=None, repr=False)  # (d_L, n_components)
+    W_S: np.ndarray | None = field(default=None, repr=False)  # (d_S, n_components)
+    mean_L: np.ndarray | None = field(default=None, repr=False)  # (d_L,) centering mean
+    mean_S: np.ndarray | None = field(default=None, repr=False)  # (d_S,) centering mean
+    std_L: np.ndarray | None = field(default=None, repr=False)   # (d_L,) scaling std (None if not standardized)
+    std_S: np.ndarray | None = field(default=None, repr=False)   # (d_S,) scaling std
 
 
 def compute_cca_metrics(
@@ -107,8 +114,8 @@ def compute_cca_metrics(
         n_components_eff = 1
 
     # 中心化（と標準化）: 訓練セットで統計量を計算し、テストセットにも同じ変換を適用する
-    F_L_train, F_L_test = _standardize(F_L_train_raw, F_L_test_raw, standardize)
-    F_S_train, F_S_test = _standardize(F_S_train_raw, F_S_test_raw, standardize)
+    F_L_train, F_L_test, mu_L, sigma_L = _standardize(F_L_train_raw, F_L_test_raw, standardize)
+    F_S_train, F_S_test, mu_S, sigma_S = _standardize(F_S_train_raw, F_S_test_raw, standardize)
 
     # Step 2: 訓練セットで共分散行列を計算する
     denom = n_train - 1
@@ -144,14 +151,14 @@ def compute_cca_metrics(
     s_train = np.clip(s_train, -1.0, 1.0)
 
     # 正準方向（射影行列）
-    # W_L: F_L を正準空間に写像する行列。shape: (d_L, n_components_eff)
-    W_L = SLL_inv_sqrt @ U
-    # W_S: F_S を正準空間に写像する行列。shape: (d_S, n_components_eff)
-    W_S = SSS_inv_sqrt @ Vt.T
+    # W_L_raw: F_L を正準空間に写像する行列。shape: (d_L, n_components_eff)
+    W_L_raw = SLL_inv_sqrt @ U
+    # W_S_raw: F_S を正準空間に写像する行列。shape: (d_S, n_components_eff)
+    W_S_raw = SSS_inv_sqrt @ Vt.T
 
     # Step 5: テストセットへの射影
-    Z_L_test = F_L_test @ W_L  # shape: (n_test, n_components_eff)
-    Z_S_test = F_S_test @ W_S  # shape: (n_test, n_components_eff)
+    Z_L_test = F_L_test @ W_L_raw  # shape: (n_test, n_components_eff)
+    Z_S_test = F_S_test @ W_S_raw  # shape: (n_test, n_components_eff)
 
     # Step 6: テストセットでの正準相関を各次元ごとに Pearson r で計算する
     s_test = np.array([
@@ -190,6 +197,12 @@ def compute_cca_metrics(
         lambda_L=lambda_L if use_regularized else 0.0,
         lambda_S=lambda_S if use_regularized else 0.0,
         n_components=n_components_eff,
+        W_L=W_L_raw[:, :n_components_eff],
+        W_S=W_S_raw[:, :n_components_eff],
+        mean_L=mu_L,
+        mean_S=mu_S,
+        std_L=sigma_L if standardize else None,
+        std_S=sigma_S if standardize else None,
     )
 
 
@@ -218,11 +231,13 @@ def _standardize(
     F_train: np.ndarray,
     F_test: np.ndarray,
     standardize: bool,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
     """訓練セットで統計量を計算し、訓練・テスト双方を変換する。
 
     standardize=True のとき各次元を平均 0・標準偏差 1 に正規化する。
     standardize=False のとき中心化のみ行う（標準偏差 1 に正規化しない）。
+
+    戻り値: (F_train_transformed, F_test_transformed, mean, std_or_None)
     """
     mean = F_train.mean(axis=0)
     F_train_c = F_train - mean
@@ -234,8 +249,9 @@ def _standardize(
         std = np.maximum(std, 1e-8)
         F_train_c = F_train_c / std
         F_test_c = F_test_c / std
+        return F_train_c, F_test_c, mean, std
 
-    return F_train_c, F_test_c
+    return F_train_c, F_test_c, mean, None
 
 
 def _pearson_r(x: np.ndarray, y: np.ndarray) -> float:

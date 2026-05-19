@@ -6,3 +6,4 @@ matplotlib>=3.7
 torch>=2.0
 torchvision>=0.15
 pytest>=7.4
+# umap-learn>=0.5  # optional: for UMAP visualization (falls back to PCA if not installed)

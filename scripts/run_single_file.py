@@ -18,7 +18,7 @@ import argparse
 import logging
 import random
 import sys
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from datetime import datetime
 from pathlib import Path
 from typing import Optional
@@ -264,6 +264,20 @@ def _fit_and_eval(
     return r2, mse
 
 
+def fit_linear_projector(
+    F_X: np.ndarray,
+    F_Y: np.ndarray,
+    use_ridge: bool = False,
+    ridge_alpha: float = 1.0,
+) -> object:
+    """F_X → F_Y の線形射影器を全データで学習して返す（可視化用）。
+    戻り値: fitted sklearn regressor (has .predict(X) method)
+    """
+    reg = Ridge(alpha=ridge_alpha) if use_ridge else LinearRegression()
+    reg.fit(F_X, F_Y)
+    return reg
+
+
 # ---------------------------------------------------------------------------
 # metrics_geometry
 # ---------------------------------------------------------------------------
@@ -409,6 +423,13 @@ class CCAMetrics:
     lambda_S: float
     # 実際に使用した正準成分数
     n_components: int
+    # Projection matrices (stored for visualization)
+    W_L: np.ndarray | None = field(default=None, repr=False)  # (d_L, n_components)
+    W_S: np.ndarray | None = field(default=None, repr=False)  # (d_S, n_components)
+    mean_L: np.ndarray | None = field(default=None, repr=False)  # (d_L,) centering mean
+    mean_S: np.ndarray | None = field(default=None, repr=False)  # (d_S,) centering mean
+    std_L: np.ndarray | None = field(default=None, repr=False)   # (d_L,) scaling std
+    std_S: np.ndarray | None = field(default=None, repr=False)   # (d_S,) scaling std
 
 
 def compute_cca_metrics(
@@ -458,8 +479,8 @@ def compute_cca_metrics(
         n_components_eff = 1
 
     # 訓練セットで統計量を計算してテストセットにも同じ変換を適用する
-    F_L_train, F_L_test = _cca_standardize(F_L_train_raw, F_L_test_raw, standardize)
-    F_S_train, F_S_test = _cca_standardize(F_S_train_raw, F_S_test_raw, standardize)
+    F_L_train, F_L_test, mu_L, sigma_L = _cca_standardize(F_L_train_raw, F_L_test_raw, standardize)
+    F_S_train, F_S_test, mu_S, sigma_S = _cca_standardize(F_S_train_raw, F_S_test_raw, standardize)
 
     # Step 2: 訓練セットで共分散行列を計算する
     denom = n_train - 1
@@ -487,12 +508,12 @@ def compute_cca_metrics(
     s_train = np.clip(s_train, -1.0, 1.0)
 
     # 正準方向（投影行列）を計算する
-    W_L = SLL_inv_sqrt @ U          # shape: (d_L, n_components_eff)
-    W_S = SSS_inv_sqrt @ Vt.T       # shape: (d_S, n_components_eff)
+    W_L_raw = SLL_inv_sqrt @ U          # shape: (d_L, n_components_eff)
+    W_S_raw = SSS_inv_sqrt @ Vt.T       # shape: (d_S, n_components_eff)
 
     # Step 5: テストセットへの射影
-    Z_L_test = F_L_test @ W_L       # shape: (n_test, n_components_eff)
-    Z_S_test = F_S_test @ W_S       # shape: (n_test, n_components_eff)
+    Z_L_test = F_L_test @ W_L_raw       # shape: (n_test, n_components_eff)
+    Z_S_test = F_S_test @ W_S_raw       # shape: (n_test, n_components_eff)
 
     # Step 6: テストセットでの正準相関を Pearson r で計算する
     s_test = np.array([
@@ -529,6 +550,12 @@ def compute_cca_metrics(
         lambda_L=lambda_L if use_regularized else 0.0,
         lambda_S=lambda_S if use_regularized else 0.0,
         n_components=n_components_eff,
+        W_L=W_L_raw[:, :n_components_eff],
+        W_S=W_S_raw[:, :n_components_eff],
+        mean_L=mu_L,
+        mean_S=mu_S,
+        std_L=sigma_L if standardize else None,
+        std_S=sigma_S if standardize else None,
     )
 
 
@@ -547,11 +574,13 @@ def _cca_standardize(
     F_train: np.ndarray,
     F_test: np.ndarray,
     standardize: bool,
-) -> tuple[np.ndarray, np.ndarray]:
+) -> tuple[np.ndarray, np.ndarray, np.ndarray, np.ndarray | None]:
     """訓練セットで統計量を計算し、訓練・テスト双方を変換する。
 
     standardize=True のとき各次元を平均 0・標準偏差 1 に正規化する。
     standardize=False のとき中心化のみ行う。
+
+    戻り値: (F_train_transformed, F_test_transformed, mean, std_or_None)
     """
     mean = F_train.mean(axis=0)
     F_train_c = F_train - mean
@@ -562,8 +591,9 @@ def _cca_standardize(
         std = np.maximum(std, 1e-8)
         F_train_c = F_train_c / std
         F_test_c = F_test_c / std
+        return F_train_c, F_test_c, mean, std
 
-    return F_train_c, F_test_c
+    return F_train_c, F_test_c, mean, None
 
 
 def _pearson_r_1d(x: np.ndarray, y: np.ndarray) -> float:
@@ -939,6 +969,262 @@ def make_figures(
 
 
 # ---------------------------------------------------------------------------
+# 幾何可視化 (visualize.py inline)
+# ---------------------------------------------------------------------------
+
+
+def _project_cca_inline(
+    F: np.ndarray,
+    mean: np.ndarray,
+    std: np.ndarray | None,
+    W: np.ndarray,
+) -> np.ndarray:
+    """Center, optionally scale, and project F using CCA weights W."""
+    F_c = F - mean
+    if std is not None:
+        F_c = F_c / std
+    return F_c @ W
+
+
+def _build_reducer_inline(
+    X_joint: np.ndarray,
+    seed: int,
+    pca_pre_dim: int = 50,
+) -> tuple[np.ndarray, str]:
+    """Fit a 2D reducer on X_joint and return coords + method name."""
+    from sklearn.decomposition import PCA
+    from sklearn.preprocessing import StandardScaler
+
+    scaler = StandardScaler()
+    X_scaled = scaler.fit_transform(X_joint)
+
+    n_samples_j, n_features_j = X_joint.shape
+    effective_pre_dim = min(pca_pre_dim, n_samples_j - 1, n_features_j - 1)
+    if n_features_j > effective_pre_dim and effective_pre_dim >= 2:
+        pca_pre = PCA(n_components=effective_pre_dim, random_state=seed)
+        X_scaled = pca_pre.fit_transform(X_scaled)
+
+    try:
+        import umap
+        reducer = umap.UMAP(n_components=2, random_state=seed, n_neighbors=15, min_dist=0.1)
+        coords_2d = reducer.fit_transform(X_scaled)
+        method_name = "UMAP"
+    except ImportError:
+        logger.warning("umap-learn not installed, falling back to PCA for visualization.")
+        reducer = PCA(n_components=2, random_state=seed)
+        coords_2d = reducer.fit_transform(X_scaled)
+        method_name = "PCA"
+
+    return coords_2d, method_name
+
+
+def _compute_geometry_aux_metrics_inline(
+    F_L: np.ndarray,
+    F_PL: np.ndarray,
+    Z_L: np.ndarray,
+    Z_S: np.ndarray,
+) -> dict:
+    """Compute auxiliary geometry metrics."""
+    from scipy.spatial.distance import cdist
+
+    centroid_L = F_L.mean(axis=0)
+    centroid_PL = F_PL.mean(axis=0)
+    centroid_dist_L_PL = float(np.linalg.norm(centroid_L - centroid_PL))
+
+    centroid_ZL = Z_L.mean(axis=0)
+    centroid_ZS = Z_S.mean(axis=0)
+    centroid_dist_merge_ZL_ZS = float(np.linalg.norm(centroid_ZL - centroid_ZS))
+
+    dists = cdist(F_L, F_PL)
+    mean_nn_dist_L_PL = float(dists.min(axis=1).mean())
+
+    try:
+        from sklearn.metrics import silhouette_score
+        Z_both = np.concatenate([Z_L, Z_S], axis=0)
+        sil_labels = np.array([0] * len(Z_L) + [1] * len(Z_S))
+        silhouette_merge = float(silhouette_score(Z_both, sil_labels))
+    except Exception:
+        silhouette_merge = float("nan")
+
+    return {
+        "centroid_dist_L_PL": centroid_dist_L_PL,
+        "centroid_dist_merge_ZL_ZS": centroid_dist_merge_ZL_ZS,
+        "mean_nn_dist_L_PL": mean_nn_dist_L_PL,
+        "silhouette_merge": silhouette_merge,
+    }
+
+
+def _draw_scatter_inline(
+    ax,
+    coords_list: list,
+    labels_list: list,
+    colors: list,
+    title: str,
+    method_name: str,
+    draw_connections: bool = False,
+    point_labels=None,
+) -> None:
+    """Draw scatter plot with multiple groups."""
+    markers = ['o', 's', '^', 'D', 'v']
+
+    if draw_connections and len(coords_list) >= 2:
+        c0, c1 = coords_list[0], coords_list[1]
+        if len(c0) == len(c1):
+            for i in range(len(c0)):
+                ax.plot(
+                    [c0[i, 0], c1[i, 0]],
+                    [c0[i, 1], c1[i, 1]],
+                    color="gray", alpha=0.2, linewidth=0.5, zorder=0,
+                )
+
+    for coords, label, color in zip(coords_list, labels_list, colors):
+        if point_labels is not None and len(point_labels) == len(coords):
+            unique_cls = sorted(set(point_labels.tolist()))
+            for cls_i, cls in enumerate(unique_cls[:5]):
+                mask = (point_labels == cls)
+                marker = markers[cls_i % len(markers)]
+                ax.scatter(
+                    coords[mask, 0], coords[mask, 1],
+                    c=color, marker=marker, alpha=0.6, s=20,
+                    label=f"{label} (cls {cls})" if cls_i == 0 else None,
+                )
+        else:
+            ax.scatter(
+                coords[:, 0], coords[:, 1],
+                c=color, alpha=0.6, s=20, label=label,
+            )
+
+    ax.set_title(title)
+    ax.set_xlabel(f"{method_name} dim 1")
+    ax.set_ylabel(f"{method_name} dim 2")
+    ax.legend(fontsize=8)
+
+
+def visualize_geometry_inline(
+    F_L: np.ndarray,
+    F_S: np.ndarray,
+    cca: CCAMetrics,
+    reg_s_to_l,
+    output_dir: str,
+    max_points: int = 500,
+    seed: int = 42,
+    pca_pre_dim: int = 50,
+    draw_connections: bool = False,
+    labels: np.ndarray | None = None,
+    layer_name: str = "",
+) -> dict:
+    """Generate 3-panel geometry visualization figure (inline version)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+
+    if cca.W_L is None:
+        logger.warning("cca.W_L is None — skipping geometry visualization.")
+        return {}
+
+    n = len(F_L)
+    rng = np.random.default_rng(seed)
+    if n > max_points:
+        idx = rng.choice(n, size=max_points, replace=False)
+        idx = np.sort(idx)
+    else:
+        idx = np.arange(n)
+
+    F_L_sub = F_L[idx].astype(np.float64)
+    F_S_sub = F_S[idx].astype(np.float64)
+    labels_sub = labels[idx] if labels is not None else None
+
+    mean_L = cca.mean_L.astype(np.float64)
+    mean_S = cca.mean_S.astype(np.float64)
+    std_L = cca.std_L.astype(np.float64) if cca.std_L is not None else None
+    std_S = cca.std_S.astype(np.float64) if cca.std_S is not None else None
+    W_L = cca.W_L.astype(np.float64)
+    W_S = cca.W_S.astype(np.float64)
+
+    Z_L = _project_cca_inline(F_L_sub, mean_L, std_L, W_L)
+    Z_S = _project_cca_inline(F_S_sub, mean_S, std_S, W_S)
+    F_PL = reg_s_to_l.predict(F_S_sub).astype(np.float64)
+    Z_PL = _project_cca_inline(F_PL, mean_L, std_L, W_L)
+
+    n_L = len(Z_L)
+
+    joint_A = np.concatenate([Z_L, Z_S], axis=0)
+    coords_A, method_name = _build_reducer_inline(joint_A, seed=seed, pca_pre_dim=pca_pre_dim)
+    coords_A_L = coords_A[:n_L]
+    coords_A_S = coords_A[n_L:]
+
+    joint_B = np.concatenate([F_L_sub, F_PL], axis=0)
+    coords_B, _ = _build_reducer_inline(joint_B, seed=seed, pca_pre_dim=pca_pre_dim)
+    coords_B_L = coords_B[:n_L]
+    coords_B_PL = coords_B[n_L:]
+
+    joint_C = np.concatenate([Z_L, Z_S, Z_PL], axis=0)
+    coords_C, _ = _build_reducer_inline(joint_C, seed=seed, pca_pre_dim=pca_pre_dim)
+    coords_C_L = coords_C[:n_L]
+    coords_C_S = coords_C[n_L: 2 * n_L]
+    coords_C_PL = coords_C[2 * n_L:]
+
+    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+
+    _draw_scatter_inline(
+        axes[0],
+        [coords_A_L, coords_A_S],
+        ["Large", "Small"],
+        ["steelblue", "salmon"],
+        "(A) Pre-inclusion: CCA space",
+        method_name,
+        draw_connections=draw_connections,
+        point_labels=labels_sub,
+    )
+
+    _draw_scatter_inline(
+        axes[1],
+        [coords_B_L, coords_B_PL],
+        ["Large", "pseudo-Large"],
+        ["steelblue", "mediumseagreen"],
+        "(B) Post-inclusion: Feature space",
+        method_name,
+        draw_connections=draw_connections,
+        point_labels=labels_sub,
+    )
+
+    _draw_scatter_inline(
+        axes[2],
+        [coords_C_L, coords_C_S, coords_C_PL],
+        ["Large", "Small", "pseudo-Large"],
+        ["steelblue", "salmon", "mediumseagreen"],
+        "(C) Merge space: CCA + pseudo-Large",
+        method_name,
+        draw_connections=False,
+        point_labels=labels_sub,
+    )
+
+    fig.tight_layout()
+
+    import os
+    geo_dir = os.path.join(output_dir, "geometry")
+    os.makedirs(geo_dir, exist_ok=True)
+
+    if layer_name:
+        fig_path = os.path.join(geo_dir, f"geometry_umap_{layer_name}.png")
+    else:
+        fig_path = os.path.join(geo_dir, "geometry_umap.png")
+
+    fig.savefig(fig_path, dpi=150, bbox_inches="tight")
+    plt.close(fig)
+    logger.info(f"幾何可視化図を保存しました: {fig_path}")
+
+    aux = _compute_geometry_aux_metrics_inline(F_L_sub, F_PL, Z_L, Z_S)
+
+    metrics_path = os.path.join(geo_dir, "geometry_metrics.txt")
+    with open(metrics_path, "w") as mf:
+        for k, v in aux.items():
+            mf.write(f"{k}={v}\n")
+
+    return aux
+
+
+# ---------------------------------------------------------------------------
 # CLI エントリーポイント
 # ---------------------------------------------------------------------------
 
@@ -1139,6 +1425,25 @@ def main() -> None:
             make_figures(linear, geometry, cca, figures_dir)
         except ImportError:
             logger.warning("matplotlib が見つかりません。図の生成をスキップします。")
+
+        # 幾何可視化
+        try:
+            reg_s_to_l = fit_linear_projector(
+                F_S, F_L,
+                use_ridge=args.ridge,
+                ridge_alpha=args.ridge_alpha,
+            )
+            aux = visualize_geometry_inline(
+                F_L, F_S, cca, reg_s_to_l,
+                output_dir=str(Path(args.output_dir) / "figures"),
+                seed=args.seed,
+            )
+            logger.info(
+                f"幾何可視化: centroid_dist_L_PL={aux.get('centroid_dist_L_PL', float('nan')):.4f}, "
+                f"silhouette_merge={aux.get('silhouette_merge', float('nan')):.4f}"
+            )
+        except Exception as e:
+            logger.warning(f"幾何可視化をスキップしました: {e}")
 
 
 if __name__ == "__main__":

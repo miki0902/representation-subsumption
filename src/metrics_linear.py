@@ -57,6 +57,20 @@ def compute_linear_metrics(
     )
 
 
+def fit_linear_projector(
+    F_X: np.ndarray,
+    F_Y: np.ndarray,
+    use_ridge: bool = False,
+    ridge_alpha: float = 1.0,
+) -> object:
+    """F_X → F_Y の線形射影器を全データで学習して返す（可視化用）。
+    戻り値: fitted sklearn regressor (has .predict(X) method)
+    """
+    reg = Ridge(alpha=ridge_alpha) if use_ridge else LinearRegression()
+    reg.fit(F_X, F_Y)
+    return reg
+
+
 def _fit_and_eval(
     X_train: np.ndarray,
     Y_train: np.ndarray,
