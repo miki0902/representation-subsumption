@@ -13,7 +13,7 @@ import numpy as np
 
 from src import utils
 from src.feature_io import load_features, align_features
-from src.metrics_linear import compute_linear_metrics, fit_linear_projector
+from src.metrics_linear import compute_linear_metrics
 from src.metrics_geometry import compute_geometric_metrics
 from src.metrics_cca import compute_cca_metrics
 from src.report import generate_report
@@ -201,22 +201,6 @@ def run(cfg: dict, dry_run: bool = False, dry_run_samples: int = 5) -> None:
     except ImportError:
         logger.warning("matplotlib が見つかりません。図の生成をスキップします。")
 
-    # 幾何可視化（matplotlib が必要、エラー時はスキップ）
-    try:
-        from src.visualize import visualize_geometry
-        figures_dir = out_cfg.get("figures_dir", "results/figures")
-        reg_s_to_l = fit_linear_projector(
-            F_S, F_L,
-            use_ridge=lin_cfg.get("use_ridge", False),
-            ridge_alpha=lin_cfg.get("ridge_alpha", 1.0),
-        )
-        aux = visualize_geometry(F_L, F_S, cca, reg_s_to_l, figures_dir)
-        logger.info(
-            f"幾何可視化: centroid_dist_L_PL={aux.get('centroid_dist_L_PL', float('nan')):.4f}, "
-            f"silhouette_merge={aux.get('silhouette_merge', float('nan')):.4f}"
-        )
-    except Exception as e:
-        logger.warning(f"幾何可視化をスキップしました: {e}")
 
 
 def _make_figures(linear, geometry, cca, out_cfg: dict) -> None:
