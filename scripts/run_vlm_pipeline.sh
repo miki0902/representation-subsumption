@@ -35,6 +35,7 @@ N_SAMPLES="${N_SAMPLES:-1000}"       # 特徴量抽出サンプル数
 N_TASK_SAMPLES="${N_TASK_SAMPLES:-500}"  # タスク評価サンプル数
 BATCH_SIZE="${BATCH_SIZE:-8}"
 DTYPE="${DTYPE:-bfloat16}"
+QUANTIZE="${QUANTIZE:-none}"         # none | 8bit | 4bit  (VRAM 不足時に変更)
 
 FEATURES_DIR="${FEATURES_DIR:-features/vlm}"
 OUTPUT_DIR="${OUTPUT_DIR:-results/vlm}"
@@ -83,6 +84,7 @@ step_extract() {
         --layer  "$LAYER" \
         --batch-size "$BATCH_SIZE" \
         --dtype  "$DTYPE" \
+        --quantize "$QUANTIZE" \
         --output "$LARGE_FEAT"
     success "Large 特徴量 → $LARGE_FEAT"
 
@@ -95,6 +97,7 @@ step_extract() {
         --layer  "$LAYER" \
         --batch-size "$BATCH_SIZE" \
         --dtype  "$DTYPE" \
+        --quantize "$QUANTIZE" \
         --output "$SMALL_FEAT"
     success "Small 特徴量 → $SMALL_FEAT"
 }
@@ -174,6 +177,7 @@ step_dry_run() {
         --n-samples 20 \
         --layer  "$LAYER" \
         --batch-size 4 \
+        --quantize "$QUANTIZE" \
         --output "${FEATURES_DIR}/dry_large.npy"
 
     python3 scripts/extract_features_vlm.py \
@@ -183,6 +187,7 @@ step_dry_run() {
         --n-samples 20 \
         --layer  "$LAYER" \
         --batch-size 4 \
+        --quantize "$QUANTIZE" \
         --output "${FEATURES_DIR}/dry_small.npy"
 
     info "--- 表現包摂分析 (dry-run) ---"
@@ -229,6 +234,7 @@ STEP:
   N_TASK_SAMPLES(デフォルト: 500)   タスク評価サンプル数
   BATCH_SIZE    (デフォルト: 8)
   DTYPE         (デフォルト: bfloat16)
+  QUANTIZE      (デフォルト: none)  none | 8bit | 4bit  ← VRAM 不足時に変更
   FEATURES_DIR  (デフォルト: features/vlm)
   OUTPUT_DIR    (デフォルト: results/vlm)
 

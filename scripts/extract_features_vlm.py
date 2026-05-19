@@ -71,6 +71,41 @@ def _resolve_dtype(dtype_str: str):
     return dtype_map[dtype_str]
 
 
+def _build_quantization_config(quantize: str, compute_dtype=None):
+    """量子化設定を返す。
+
+    Args:
+        quantize: "none" / "8bit" / "4bit"
+        compute_dtype: 4bit 時の計算精度 (torch.bfloat16 など)
+
+    Returns:
+        BitsAndBytesConfig または None
+    """
+    if quantize == "none":
+        return None
+    try:
+        from transformers import BitsAndBytesConfig
+    except ImportError:
+        logger.warning("BitsAndBytesConfig が見つかりません。量子化をスキップします。")
+        return None
+
+    if quantize == "8bit":
+        logger.info("8-bit 量子化を有効化 (bitsandbytes)")
+        return BitsAndBytesConfig(load_in_8bit=True)
+    elif quantize == "4bit":
+        import torch
+        bnb_dtype = compute_dtype if compute_dtype is not None else torch.bfloat16
+        logger.info(f"4-bit 量子化を有効化 (bitsandbytes, compute_dtype={bnb_dtype})")
+        return BitsAndBytesConfig(
+            load_in_4bit=True,
+            bnb_4bit_quant_type="nf4",
+            bnb_4bit_compute_dtype=bnb_dtype,
+            bnb_4bit_use_double_quant=True,
+        )
+    else:
+        raise ValueError(f"非対応の quantize: {quantize}. 対応: none, 8bit, 4bit")
+
+
 def _resolve_device(device_str: str) -> str:
     """デバイス文字列を解決する。"auto" のときは CUDA → MPS → CPU の順に試みる。"""
     if device_str != "auto":
@@ -97,6 +132,7 @@ def _extract_qwen2vl(
     device: str,
     dtype,
     batch_size: int,
+    quantize: str = "none",
 ) -> np.ndarray:
     """Qwen2-VL のビジョンエンコーダまたは LLM 最終層から特徴量を抽出する。
 
@@ -116,12 +152,22 @@ def _extract_qwen2vl(
             "qwen-vl-utils が見つかりません。pip install qwen-vl-utils を検討してください。"
         )
 
+    quantization_config = _build_quantization_config(quantize, compute_dtype=dtype)
+
     logger.info(f"Qwen2-VL モデルをロード中: {model_name}")
+    load_kwargs: dict = dict(
+        device_map="auto" if quantization_config is not None else device,
+        trust_remote_code=True,
+    )
+    if quantization_config is not None:
+        # 量子化時は torch_dtype を BitsAndBytesConfig 側で管理する
+        load_kwargs["quantization_config"] = quantization_config
+    else:
+        load_kwargs["torch_dtype"] = dtype
+
     model = Qwen2VLForConditionalGeneration.from_pretrained(
         model_name,
-        torch_dtype=dtype,
-        device_map=device,
-        trust_remote_code=True,
+        **load_kwargs,
     )
     model.eval()
     processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
@@ -234,6 +280,7 @@ def _extract_llava(
     device: str,
     dtype,
     batch_size: int,
+    quantize: str = "none",
 ) -> np.ndarray:
     """LLaVA-1.5 のビジョンタワーまたは LLM 最終層から特徴量を抽出する。
 
@@ -245,12 +292,21 @@ def _extract_llava(
     import torch
     from transformers import LlavaForConditionalGeneration, AutoProcessor
 
+    quantization_config = _build_quantization_config(quantize, compute_dtype=dtype)
+
     logger.info(f"LLaVA モデルをロード中: {model_name}")
+    load_kwargs: dict = dict(
+        device_map="auto" if quantization_config is not None else device,
+        trust_remote_code=True,
+    )
+    if quantization_config is not None:
+        load_kwargs["quantization_config"] = quantization_config
+    else:
+        load_kwargs["torch_dtype"] = dtype
+
     model = LlavaForConditionalGeneration.from_pretrained(
         model_name,
-        torch_dtype=dtype,
-        device_map=device,
-        trust_remote_code=True,
+        **load_kwargs,
     )
     model.eval()
     processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
@@ -334,6 +390,7 @@ def _extract_generic(
     device: str,
     dtype,
     batch_size: int,
+    quantize: str = "none",
 ) -> np.ndarray:
     """汎用 VLM から LLM 最終層の hidden states を抽出する。
 
@@ -343,22 +400,28 @@ def _extract_generic(
     import torch
     from transformers import AutoProcessor
 
+    quantization_config = _build_quantization_config(quantize, compute_dtype=dtype)
+    load_kwargs: dict = dict(
+        device_map="auto" if quantization_config is not None else device,
+        trust_remote_code=True,
+    )
+    if quantization_config is not None:
+        load_kwargs["quantization_config"] = quantization_config
+    else:
+        load_kwargs["torch_dtype"] = dtype
+
     logger.info(f"汎用モデルとしてロード中: {model_name}")
     try:
         from transformers import AutoModelForVision2Seq
         model = AutoModelForVision2Seq.from_pretrained(
             model_name,
-            torch_dtype=dtype,
-            device_map=device,
-            trust_remote_code=True,
+            **load_kwargs,
         )
     except Exception:
         from transformers import AutoModelForCausalLM
         model = AutoModelForCausalLM.from_pretrained(
             model_name,
-            torch_dtype=dtype,
-            device_map=device,
-            trust_remote_code=True,
+            **load_kwargs,
         )
 
     model.eval()
@@ -491,6 +554,7 @@ def save_metadata(
     n_samples: int,
     feature_shape: tuple[int, int],
     elapsed_sec: float,
+    quantize: str = "none",
 ) -> None:
     """特徴量抽出の設定と結果をメタデータとして JSON に保存する。"""
     meta = {
@@ -501,6 +565,7 @@ def save_metadata(
         "n_samples": n_samples,
         "feature_shape": list(feature_shape),
         "elapsed_sec": round(elapsed_sec, 2),
+        "quantize": quantize,
         "output_path": str(output_path),
     }
     meta_path = output_path.with_suffix(".json")
@@ -558,6 +623,16 @@ def parse_args() -> argparse.Namespace:
         choices=["float16", "float32", "bfloat16"],
         help="モデルの重みの dtype",
     )
+    p.add_argument(
+        "--quantize",
+        default="none",
+        choices=["none", "8bit", "4bit"],
+        help=(
+            "bitsandbytes による量子化 (VRAM 不足時に使用)。"
+            "8bit: ~8GB, 4bit: ~5GB で 7B モデルが動作。"
+            "要: pip install bitsandbytes"
+        ),
+    )
     p.add_argument("--debug", action="store_true", help="デバッグログを有効化")
     return p.parse_args()
 
@@ -571,7 +646,7 @@ def main() -> None:
 
     device = _resolve_device(args.device)
     dtype = _resolve_dtype(args.dtype)
-    logger.info(f"デバイス: {device}, dtype: {args.dtype}")
+    logger.info(f"デバイス: {device}, dtype: {args.dtype}, quantize: {args.quantize}")
 
     # 画像の読み込み
     images = load_images(args.dataset, args.split, args.n_samples)
@@ -584,15 +659,18 @@ def main() -> None:
     t0 = time.time()
     if family == "qwen2vl":
         features = _extract_qwen2vl(
-            args.model, images, args.layer, device, dtype, args.batch_size
+            args.model, images, args.layer, device, dtype, args.batch_size,
+            quantize=args.quantize,
         )
     elif family == "llava":
         features = _extract_llava(
-            args.model, images, args.layer, device, dtype, args.batch_size
+            args.model, images, args.layer, device, dtype, args.batch_size,
+            quantize=args.quantize,
         )
     else:
         features = _extract_generic(
-            args.model, images, args.layer, device, dtype, args.batch_size
+            args.model, images, args.layer, device, dtype, args.batch_size,
+            quantize=args.quantize,
         )
     elapsed = time.time() - t0
 
@@ -613,6 +691,7 @@ def main() -> None:
         n_samples=len(images),
         feature_shape=features.shape,
         elapsed_sec=elapsed,
+        quantize=args.quantize,
     )
 
 
