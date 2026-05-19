@@ -660,8 +660,6 @@ def generate_report(
         "|------|---|",
         f"| R²_L→S | {linear.r2_l_to_s:.4f} |",
         f"| R²_S→L | {linear.r2_s_to_l:.4f} |",
-        f"| MSE_L→S | {linear.mse_l_to_s:.6f} |",
-        f"| MSE_S→L | {linear.mse_s_to_l:.6f} |",
         f"| Directional Gap (R²_L→S − R²_S→L) | {linear.directional_gap:.4f} |",
         "",
     ]
