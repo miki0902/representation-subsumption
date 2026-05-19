@@ -1,0 +1,10 @@
+# Core VLM dependencies (in addition to requirements.txt)
+vllm>=0.4.0
+transformers>=4.40.0
+accelerate>=0.27.0
+Pillow>=10.0
+datasets>=2.18.0
+nltk>=3.8          # BLEU-4 for captioning
+evaluate>=0.4.0    # optional, for additional metrics
+qwen-vl-utils>=0.0.8   # for Qwen2-VL
+# pycocoevalcap  # optional: full CIDEr; pip install pycocoevalcap

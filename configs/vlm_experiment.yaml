@@ -1,0 +1,56 @@
+experiment:
+  name: "vlm_representation_subsumption"
+  large_model: "Qwen/Qwen2-VL-7B-Instruct"
+  small_model: "Qwen/Qwen2-VL-2B-Instruct"
+  description: "Representation subsumption analysis for VLMs"
+
+feature_extraction:
+  dataset: "nlphuji/flickr30k"
+  dataset_split: "test"
+  n_samples: 1000
+  layer: "vision_encoder"   # vision_encoder | llm_last
+  batch_size: 8
+  device: "auto"
+  dtype: "bfloat16"
+  output_dir: "features/vlm"
+
+task_evaluation:
+  tasks:
+    - captioning
+    - vqa
+    - multiple_choice
+    - binary
+  n_samples_per_task: 500
+  datasets:
+    captioning: "nlphuji/flickr30k"
+    vqa: "HuggingFaceM4/VQAv2"
+    multiple_choice: "derek-thomas/ScienceQA"
+    binary: "lmms-lab/POPE"
+  output_dir: "results/task_eval"
+
+# Representation subsumption analysis settings (passed to run_analysis.py)
+features:
+  large_path: "features/vlm/qwen2vl_7b_flickr30k.npy"
+  small_path: "features/vlm/qwen2vl_2b_flickr30k.npy"
+
+linear:
+  test_size: 0.2
+  random_state: 42
+  use_ridge: true
+  ridge_alpha: 1.0
+
+geometry:
+  knn_k: [5, 10, 20]
+
+cca:
+  n_components: 16
+  r_values: [4, 8, 16]
+  lambda_L: 1.0e-3
+  lambda_S: 1.0e-3
+  use_regularized: null
+  standardize: true
+
+output:
+  figures_dir: "results/vlm/figures"
+  tables_dir: "results/vlm/tables"
+  reports_dir: "results/vlm/reports"
