@@ -1100,40 +1100,20 @@ def _draw_scatter_inline(
     ax.legend(fontsize=8)
 
 
-def visualize_geometry_inline(
-    F_L: np.ndarray,
-    F_S: np.ndarray,
+def _compute_panel_coords_inline(
+    F_L_sub: np.ndarray,
+    F_S_sub: np.ndarray,
     cca: CCAMetrics,
     reg_s_to_l,
-    output_dir: str,
-    max_points: int = 500,
-    seed: int = 42,
-    pca_pre_dim: int = 50,
-    draw_connections: bool = False,
-    labels: np.ndarray | None = None,
-    layer_name: str = "",
-) -> dict:
-    """Generate 3-panel geometry visualization figure (inline version)."""
-    import matplotlib
-    matplotlib.use("Agg")
-    import matplotlib.pyplot as plt
+    seed: int,
+    pca_pre_dim: int,
+) -> tuple:
+    """Compute 2D coordinates for all three panels (inline version).
 
-    if cca.W_L is None:
-        logger.warning("cca.W_L is None — skipping geometry visualization.")
-        return {}
-
-    n = len(F_L)
-    rng = np.random.default_rng(seed)
-    if n > max_points:
-        idx = rng.choice(n, size=max_points, replace=False)
-        idx = np.sort(idx)
-    else:
-        idx = np.arange(n)
-
-    F_L_sub = F_L[idx].astype(np.float64)
-    F_S_sub = F_S[idx].astype(np.float64)
-    labels_sub = labels[idx] if labels is not None else None
-
+    Returns:
+        (coords_A_L, coords_A_S, coords_B_L, coords_B_PL,
+         coords_C_L, coords_C_S, Z_L, Z_S, F_PL, method_name)
+    """
     mean_L = cca.mean_L.astype(np.float64)
     mean_S = cca.mean_S.astype(np.float64)
     std_L = cca.std_L.astype(np.float64) if cca.std_L is not None else None
@@ -1144,7 +1124,6 @@ def visualize_geometry_inline(
     Z_L = _project_cca_inline(F_L_sub, mean_L, std_L, W_L)
     Z_S = _project_cca_inline(F_S_sub, mean_S, std_S, W_S)
     F_PL = reg_s_to_l.predict(F_S_sub).astype(np.float64)
-    Z_PL = _project_cca_inline(F_PL, mean_L, std_L, W_L)
 
     n_L = len(Z_L)
 
@@ -1163,10 +1142,110 @@ def visualize_geometry_inline(
     coords_C_L = coords_C[:n_L]
     coords_C_S = coords_C[n_L:]
 
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    return (coords_A_L, coords_A_S, coords_B_L, coords_B_PL,
+            coords_C_L, coords_C_S, Z_L, Z_S, F_PL, method_name)
+
+
+def visualize_geometry_inline(
+    F_L: np.ndarray,
+    F_S: np.ndarray,
+    cca: CCAMetrics,
+    reg_s_to_l,
+    output_dir: str,
+    max_points: int = 500,
+    seed: int = 42,
+    pca_pre_dim: int = 50,
+    draw_connections: bool = False,
+    labels: np.ndarray | None = None,
+    layer_name: str = "",
+    shuffle_baseline: bool = True,
+    # CCA recompute params (needed for shuffle)
+    n_components: int = 16,
+    use_regularized: bool | None = None,
+    lambda_L: float = 1e-3,
+    lambda_S: float = 1e-3,
+    standardize: bool = True,
+    # Linear recompute params
+    use_ridge: bool = False,
+    ridge_alpha: float = 1.0,
+    random_state: int = 42,
+) -> dict:
+    """Generate geometry visualization figure (inline version, 1×3 or 2×3 with shuffle baseline)."""
+    import matplotlib
+    matplotlib.use("Agg")
+    import matplotlib.pyplot as plt
+    import os
+
+    if cca.W_L is None:
+        logger.warning("cca.W_L is None — skipping geometry visualization.")
+        return {}
+
+    n = len(F_L)
+    rng = np.random.default_rng(seed)
+    if n > max_points:
+        idx = rng.choice(n, size=max_points, replace=False)
+        idx = np.sort(idx)
+    else:
+        idx = np.arange(n)
+
+    F_L_sub = F_L[idx].astype(np.float64)
+    F_S_sub = F_S[idx].astype(np.float64)
+    labels_sub = labels[idx] if labels is not None else None
+
+    # Compute real panel coords
+    (coords_A_L, coords_A_S, coords_B_L, coords_B_PL,
+     coords_C_L, coords_C_S, Z_L, Z_S, F_PL, method_name) = _compute_panel_coords_inline(
+        F_L_sub, F_S_sub, cca, reg_s_to_l, seed, pca_pre_dim
+    )
+
+    # Optionally compute shuffle baseline
+    shuf_coords = None
+    if shuffle_baseline:
+        try:
+            rng_shuf = np.random.default_rng(seed + 999)
+            shuf_order = rng_shuf.permutation(len(F_S_sub))
+            F_S_shuf = F_S_sub[shuf_order]
+
+            cca_shuf = compute_cca_metrics(
+                F_L_sub, F_S_shuf,
+                n_components=n_components,
+                r_values=[1],
+                knn_ks=[1],
+                test_size=0.2,
+                random_state=random_state,
+                use_regularized=use_regularized,
+                lambda_L=lambda_L,
+                lambda_S=lambda_S,
+                standardize=standardize,
+            )
+
+            if cca_shuf.W_L is None:
+                logger.warning("cca_shuf.W_L is None — skipping shuffle baseline row.")
+            else:
+                reg_shuf = fit_linear_projector(
+                    F_S_shuf, F_L_sub,
+                    use_ridge=use_ridge,
+                    ridge_alpha=ridge_alpha,
+                )
+                shuf_coords = _compute_panel_coords_inline(
+                    F_L_sub, F_S_shuf, cca_shuf, reg_shuf, seed, pca_pre_dim
+                )
+        except Exception as e:
+            logger.warning(f"シャッフルベースライン計算中にエラー: {e} — スキップします。")
+
+    # Create figure
+    n_rows = 2 if (shuffle_baseline and shuf_coords is not None) else 1
+    fig_height = 6 * n_rows
+    fig, axes_all = plt.subplots(n_rows, 3, figsize=(18, fig_height))
+
+    # Normalize axes to 2D indexing
+    if n_rows == 1:
+        axes_row0 = axes_all
+    else:
+        axes_row0 = axes_all[0]
 
     _draw_scatter_inline(
-        axes[0],
+        axes_row0[0],
         [coords_A_L, coords_A_S],
         ["Large", "Small"],
         ["steelblue", "salmon"],
@@ -1177,7 +1256,7 @@ def visualize_geometry_inline(
     )
 
     _draw_scatter_inline(
-        axes[1],
+        axes_row0[1],
         [coords_B_L, coords_B_PL],
         ["Large", "pseudo-Large (S→L)"],
         ["steelblue", "mediumseagreen"],
@@ -1188,7 +1267,7 @@ def visualize_geometry_inline(
     )
 
     _draw_scatter_inline(
-        axes[2],
+        axes_row0[2],
         [coords_C_L, coords_C_S],
         ["Large", "Small"],
         ["steelblue", "salmon"],
@@ -1198,9 +1277,47 @@ def visualize_geometry_inline(
         point_labels=labels_sub,
     )
 
+    # Row 1: shuffle baseline
+    if n_rows == 2 and shuf_coords is not None:
+        (sc_A_L, sc_A_S, sc_B_L, sc_B_PL,
+         sc_C_L, sc_C_S, _sZ_L, _sZ_S, _sF_PL, shuf_method) = shuf_coords
+        axes_row1 = axes_all[1]
+
+        _draw_scatter_inline(
+            axes_row1[0],
+            [sc_A_L, sc_A_S],
+            ["Large", "Small"],
+            ["steelblue", "salmon"],
+            "(A) CCA Common Space: Large vs Small [Shuffled baseline]",
+            shuf_method,
+            draw_connections=draw_connections,
+            point_labels=labels_sub,
+        )
+
+        _draw_scatter_inline(
+            axes_row1[1],
+            [sc_B_L, sc_B_PL],
+            ["Large", "pseudo-Large (S→L)"],
+            ["steelblue", "mediumseagreen"],
+            "(B) Large Feature Space: Original vs Reconstructed [Shuffled baseline]",
+            shuf_method,
+            draw_connections=draw_connections,
+            point_labels=labels_sub,
+        )
+
+        _draw_scatter_inline(
+            axes_row1[2],
+            [sc_C_L, sc_C_S],
+            ["Large", "Small"],
+            ["steelblue", "salmon"],
+            "(C) Merge Space (CCA canonical) [Shuffled baseline]",
+            shuf_method,
+            draw_connections=draw_connections,
+            point_labels=labels_sub,
+        )
+
     fig.tight_layout()
 
-    import os
     geo_dir = os.path.join(output_dir, "geometry")
     os.makedirs(geo_dir, exist_ok=True)
 
@@ -1440,6 +1557,15 @@ def main() -> None:
                 output_dir=str(Path(args.output_dir) / "figures"),
                 max_points=args.vis_max_points,
                 seed=args.seed,
+                shuffle_baseline=True,
+                n_components=args.n_components,
+                use_regularized=True if args.regularized else None,
+                lambda_L=args.lambda_l,
+                lambda_S=args.lambda_s,
+                standardize=not args.no_standardize,
+                use_ridge=args.ridge,
+                ridge_alpha=args.ridge_alpha,
+                random_state=args.seed,
             )
             logger.info(
                 f"幾何可視化: centroid_dist_L_PL={aux.get('centroid_dist_L_PL', float('nan')):.4f}, "

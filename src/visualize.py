@@ -199,6 +199,63 @@ def _draw_scatter(
     ax.legend(fontsize=8)
 
 
+def _compute_panel_coords(
+    F_L_sub: np.ndarray,
+    F_S_sub: np.ndarray,
+    cca,
+    reg_s_to_l,
+    seed: int,
+    pca_pre_dim: int,
+) -> tuple:
+    """Compute 2D coordinates for all three panels.
+
+    Args:
+        F_L_sub: (n, d_L) subsampled Large features
+        F_S_sub: (n, d_S) subsampled Small features
+        cca: CCAMetrics with projection matrices
+        reg_s_to_l: fitted sklearn regressor S→L
+        seed: random seed for reducers
+        pca_pre_dim: PCA pre-reduction dim threshold
+
+    Returns:
+        (coords_A_L, coords_A_S, coords_B_L, coords_B_PL,
+         coords_C_L, coords_C_S, F_PL, method_name)
+    """
+    mean_L = cca.mean_L.astype(np.float64)
+    mean_S = cca.mean_S.astype(np.float64)
+    std_L = cca.std_L.astype(np.float64) if cca.std_L is not None else None
+    std_S = cca.std_S.astype(np.float64) if cca.std_S is not None else None
+    W_L = cca.W_L.astype(np.float64)
+    W_S = cca.W_S.astype(np.float64)
+
+    Z_L = _project_cca(F_L_sub, mean_L, std_L, W_L)
+    Z_S = _project_cca(F_S_sub, mean_S, std_S, W_S)
+    F_PL = reg_s_to_l.predict(F_S_sub).astype(np.float64)
+
+    n_L = len(Z_L)
+
+    # Panel A — CCA space Z_L vs Z_S
+    joint_A = np.concatenate([Z_L, Z_S], axis=0)
+    coords_A, method_name = _build_reducer(joint_A, seed=seed, pca_pre_dim=pca_pre_dim)
+    coords_A_L = coords_A[:n_L]
+    coords_A_S = coords_A[n_L:]
+
+    # Panel B — Feature space F_L vs F_PL
+    joint_B = np.concatenate([F_L_sub, F_PL], axis=0)
+    coords_B, _ = _build_reducer(joint_B, seed=seed, pca_pre_dim=pca_pre_dim)
+    coords_B_L = coords_B[:n_L]
+    coords_B_PL = coords_B[n_L:]
+
+    # Panel C — Merge space: Z_L vs Z_S (independent reducer)
+    joint_C = np.concatenate([Z_L, Z_S], axis=0)
+    coords_C, _ = _build_reducer(joint_C, seed=seed, pca_pre_dim=pca_pre_dim)
+    coords_C_L = coords_C[:n_L]
+    coords_C_S = coords_C[n_L:]
+
+    return (coords_A_L, coords_A_S, coords_B_L, coords_B_PL,
+            coords_C_L, coords_C_S, F_PL, method_name)
+
+
 def visualize_geometry(
     F_L: np.ndarray,
     F_S: np.ndarray,
@@ -211,8 +268,19 @@ def visualize_geometry(
     draw_connections: bool = False,
     labels: np.ndarray | None = None,
     layer_name: str = "",
+    shuffle_baseline: bool = True,
+    # CCA recompute params (needed for shuffle)
+    n_components: int = 16,
+    use_regularized: bool | None = None,
+    lambda_L: float = 1e-3,
+    lambda_S: float = 1e-3,
+    standardize: bool = True,
+    # Linear recompute params
+    use_ridge: bool = False,
+    ridge_alpha: float = 1.0,
+    random_state: int = 42,
 ) -> dict:
-    """Generate 3-panel geometry visualization figure.
+    """Generate geometry visualization figure (1×3 or 2×3 with shuffle baseline).
 
     Args:
         F_L: (n, d_L) full Large features
@@ -226,6 +294,15 @@ def visualize_geometry(
         draw_connections: connect same-sample points with thin lines
         labels: (n,) integer class labels
         layer_name: suffix for output filename
+        shuffle_baseline: if True, add a 2nd row with shuffled F_S baseline
+        n_components: CCA components for shuffle recompute
+        use_regularized: regularized CCA flag for shuffle recompute
+        lambda_L: CCA lambda_L for shuffle recompute
+        lambda_S: CCA lambda_S for shuffle recompute
+        standardize: CCA standardize flag for shuffle recompute
+        use_ridge: use Ridge regression for shuffle linear projector
+        ridge_alpha: Ridge alpha for shuffle linear projector
+        random_state: random state for shuffle CCA recompute
 
     Returns:
         dict of auxiliary metrics
@@ -251,43 +328,63 @@ def visualize_geometry(
     F_S_sub = F_S[idx].astype(np.float64)
     labels_sub = labels[idx] if labels is not None else None
 
-    # Step 2: Compute projections
-    mean_L = cca.mean_L.astype(np.float64)
-    mean_S = cca.mean_S.astype(np.float64)
-    std_L = cca.std_L.astype(np.float64) if cca.std_L is not None else None
-    std_S = cca.std_S.astype(np.float64) if cca.std_S is not None else None
-    W_L = cca.W_L.astype(np.float64)
-    W_S = cca.W_S.astype(np.float64)
+    # Step 2: Compute real panel coords
+    (coords_A_L, coords_A_S, coords_B_L, coords_B_PL,
+     coords_C_L, coords_C_S, F_PL, method_name) = _compute_panel_coords(
+        F_L_sub, F_S_sub, cca, reg_s_to_l, seed, pca_pre_dim
+    )
 
-    Z_L = _project_cca(F_L_sub, mean_L, std_L, W_L)
-    Z_S = _project_cca(F_S_sub, mean_S, std_S, W_S)
-    F_PL = reg_s_to_l.predict(F_S_sub).astype(np.float64)  # pseudo-Large
-    Z_PL = _project_cca(F_PL, mean_L, std_L, W_L)  # pseudo-Large in CCA space
+    # Step 3: Optionally compute shuffle baseline
+    shuf_coords = None
+    if shuffle_baseline:
+        try:
+            from .metrics_cca import compute_cca_metrics
+            from .metrics_linear import fit_linear_projector
 
-    # Step 3: Panel A — CCA space Z_L vs Z_S
-    joint_A = np.concatenate([Z_L, Z_S], axis=0)
-    coords_A, method_name = _build_reducer(joint_A, seed=seed, pca_pre_dim=pca_pre_dim)
-    n_L = len(Z_L)
-    coords_A_L = coords_A[:n_L]
-    coords_A_S = coords_A[n_L:]
+            rng_shuf = np.random.default_rng(seed + 999)
+            shuf_order = rng_shuf.permutation(len(F_S_sub))
+            F_S_shuf = F_S_sub[shuf_order]
 
-    # Step 4: Panel B — Feature space F_L vs F_PL
-    joint_B = np.concatenate([F_L_sub, F_PL], axis=0)
-    coords_B, _ = _build_reducer(joint_B, seed=seed, pca_pre_dim=pca_pre_dim)
-    coords_B_L = coords_B[:n_L]
-    coords_B_PL = coords_B[n_L:]
+            cca_shuf = compute_cca_metrics(
+                F_L_sub, F_S_shuf,
+                n_components=n_components,
+                r_values=[1],
+                knn_ks=[1],
+                test_size=0.2,
+                random_state=random_state,
+                use_regularized=use_regularized,
+                lambda_L=lambda_L,
+                lambda_S=lambda_S,
+                standardize=standardize,
+            )
 
-    # Step 5: Panel C — Merge space: Z_L vs Z_S のみ（同じ joint_A の reducer を再利用せず独立に fit）
-    joint_C = np.concatenate([Z_L, Z_S], axis=0)
-    coords_C, _ = _build_reducer(joint_C, seed=seed, pca_pre_dim=pca_pre_dim)
-    coords_C_L = coords_C[:n_L]
-    coords_C_S = coords_C[n_L:]
+            if cca_shuf.W_L is None:
+                logger.warning("cca_shuf.W_L is None — skipping shuffle baseline row.")
+            else:
+                reg_shuf = fit_linear_projector(
+                    F_S_shuf, F_L_sub,
+                    use_ridge=use_ridge,
+                    ridge_alpha=ridge_alpha,
+                )
+                shuf_coords = _compute_panel_coords(
+                    F_L_sub, F_S_shuf, cca_shuf, reg_shuf, seed, pca_pre_dim
+                )
+        except Exception as e:
+            logger.warning(f"シャッフルベースライン計算中にエラー: {e} — スキップします。")
 
-    # Step 6: Create figure
-    fig, axes = plt.subplots(1, 3, figsize=(18, 6))
+    # Step 4: Create figure
+    n_rows = 2 if (shuffle_baseline and shuf_coords is not None) else 1
+    fig_height = 6 * n_rows
+    fig, axes_all = plt.subplots(n_rows, 3, figsize=(18, fig_height))
+
+    # Normalize axes to 2D array
+    if n_rows == 1:
+        axes_row0 = axes_all
+    else:
+        axes_row0 = axes_all[0]
 
     _draw_scatter(
-        axes[0],
+        axes_row0[0],
         [coords_A_L, coords_A_S],
         ["Large", "Small"],
         ["steelblue", "salmon"],
@@ -298,7 +395,7 @@ def visualize_geometry(
     )
 
     _draw_scatter(
-        axes[1],
+        axes_row0[1],
         [coords_B_L, coords_B_PL],
         ["Large", "pseudo-Large (S→L)"],
         ["steelblue", "mediumseagreen"],
@@ -309,7 +406,7 @@ def visualize_geometry(
     )
 
     _draw_scatter(
-        axes[2],
+        axes_row0[2],
         [coords_C_L, coords_C_S],
         ["Large", "Small"],
         ["steelblue", "salmon"],
@@ -318,6 +415,45 @@ def visualize_geometry(
         draw_connections=draw_connections,
         point_labels=labels_sub,
     )
+
+    # Row 1: shuffle baseline
+    if n_rows == 2 and shuf_coords is not None:
+        (sc_A_L, sc_A_S, sc_B_L, sc_B_PL,
+         sc_C_L, sc_C_S, _F_PL_shuf, shuf_method) = shuf_coords
+        axes_row1 = axes_all[1]
+
+        _draw_scatter(
+            axes_row1[0],
+            [sc_A_L, sc_A_S],
+            ["Large", "Small"],
+            ["steelblue", "salmon"],
+            "(A) CCA Common Space: Large vs Small [Shuffled baseline]",
+            shuf_method,
+            draw_connections=draw_connections,
+            point_labels=labels_sub,
+        )
+
+        _draw_scatter(
+            axes_row1[1],
+            [sc_B_L, sc_B_PL],
+            ["Large", "pseudo-Large (S→L)"],
+            ["steelblue", "mediumseagreen"],
+            "(B) Large Feature Space: Original vs Reconstructed [Shuffled baseline]",
+            shuf_method,
+            draw_connections=draw_connections,
+            point_labels=labels_sub,
+        )
+
+        _draw_scatter(
+            axes_row1[2],
+            [sc_C_L, sc_C_S],
+            ["Large", "Small"],
+            ["steelblue", "salmon"],
+            "(C) Merge Space (CCA canonical) [Shuffled baseline]",
+            shuf_method,
+            draw_connections=draw_connections,
+            point_labels=labels_sub,
+        )
 
     fig.tight_layout()
 
@@ -334,8 +470,17 @@ def visualize_geometry(
     plt.close(fig)
     logger.info(f"幾何可視化図を保存しました: {fig_path}")
 
-    # Step 7: Compute aux metrics
-    aux = compute_geometry_aux_metrics(F_L_sub, F_PL, Z_L, Z_S)
+    # Step 5: Compute aux metrics (unchanged)
+    # Recompute Z_L / Z_S for aux metrics using real cca projections
+    _mean_L = cca.mean_L.astype(np.float64)
+    _mean_S = cca.mean_S.astype(np.float64)
+    _std_L = cca.std_L.astype(np.float64) if cca.std_L is not None else None
+    _std_S = cca.std_S.astype(np.float64) if cca.std_S is not None else None
+    _W_L = cca.W_L.astype(np.float64)
+    _W_S = cca.W_S.astype(np.float64)
+    _Z_L = _project_cca(F_L_sub, _mean_L, _std_L, _W_L)
+    _Z_S = _project_cca(F_S_sub, _mean_S, _std_S, _W_S)
+    aux = compute_geometry_aux_metrics(F_L_sub, F_PL, _Z_L, _Z_S)
 
     # Save aux metrics to text file
     metrics_path = os.path.join(geo_dir, "geometry_metrics.txt")
