@@ -42,11 +42,15 @@ def _detect_model_family(model_name: str) -> str:
     """モデル名からファミリーを検出する。
 
     戻り値:
-      "qwen2vl"  : Qwen2-VL 系
+      "qwen25vl" : Qwen2.5-VL 系 (Qwen2_5_VLForConditionalGeneration)
+      "qwen2vl"  : Qwen2-VL 系   (Qwen2VLForConditionalGeneration)
       "llava"    : LLaVA-1.5 系
       "generic"  : それ以外（LLM 最終層からの汎用抽出）
     """
     lower = model_name.lower()
+    # Qwen2.5-VL は Qwen2-VL より先にチェックする（部分文字列の包含関係に注意）
+    if "qwen2.5-vl" in lower or "qwen2_5_vl" in lower or "qwen2.5vl" in lower:
+        return "qwen25vl"
     if "qwen2-vl" in lower or "qwen2vl" in lower:
         return "qwen2vl"
     if "llava" in lower:
@@ -254,6 +258,147 @@ def _extract_qwen2vl(
                             feat = last_hidden[0][mask].mean(dim=0).float().cpu().numpy()
                         else:
                             feat = last_hidden[0].mean(dim=0).float().cpu().numpy()
+                    else:
+                        feat = last_hidden[0].mean(dim=0).float().cpu().numpy()
+                    batch_features.append(feat)
+        else:
+            raise ValueError(f"非対応の layer: {layer}. 対応: vision_encoder, llm_last")
+
+        if batch_features:
+            all_features.extend(batch_features)
+
+        if (batch_idx + 1) % 10 == 0 or batch_idx == n_batches - 1:
+            logger.info(f"  バッチ {batch_idx + 1}/{n_batches} 完了 ({len(all_features)} サンプル抽出済み)")
+
+    return np.stack(all_features, axis=0).astype(np.float32)
+
+
+# ---------------------------------------------------------------------------
+# Qwen2.5-VL 特徴量抽出
+# ---------------------------------------------------------------------------
+
+def _extract_qwen25vl(
+    model_name: str,
+    images: list,
+    layer: str,
+    device: str,
+    dtype,
+    batch_size: int,
+    quantize: str = "none",
+) -> np.ndarray:
+    """Qwen2.5-VL のビジョンエンコーダまたは LLM 最終層から特徴量を抽出する。
+
+    Qwen2.5-VL は Qwen2-VL と同様の構造を持つが、
+    モデルクラスが Qwen2_5_VLForConditionalGeneration に変更されている。
+    visual サブモジュールの使い方は Qwen2-VL と同じ。
+    """
+    import torch
+    from transformers import AutoProcessor
+    try:
+        from transformers import Qwen2_5_VLForConditionalGeneration
+    except ImportError:
+        # 旧バージョンの transformers では未定義の場合がある
+        logger.warning(
+            "Qwen2_5_VLForConditionalGeneration が見つかりません。"
+            "transformers を最新版にアップデートしてください: pip install -U transformers"
+        )
+        raise
+
+    quantization_config = _build_quantization_config(quantize, compute_dtype=dtype)
+
+    logger.info(f"Qwen2.5-VL モデルをロード中: {model_name}")
+    load_kwargs: dict = dict(
+        device_map="auto" if quantization_config is not None else device,
+        trust_remote_code=True,
+    )
+    if quantization_config is not None:
+        load_kwargs["quantization_config"] = quantization_config
+    else:
+        load_kwargs["torch_dtype"] = dtype
+
+    model = Qwen2_5_VLForConditionalGeneration.from_pretrained(
+        model_name,
+        **load_kwargs,
+    )
+    model.eval()
+    processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+
+    all_features: list[np.ndarray] = []
+    n_batches = (len(images) + batch_size - 1) // batch_size
+
+    for batch_idx in range(n_batches):
+        batch_imgs = images[batch_idx * batch_size : (batch_idx + 1) * batch_size]
+
+        messages_list = [
+            [
+                {
+                    "role": "user",
+                    "content": [
+                        {"type": "image", "image": img},
+                        {"type": "text", "text": "Describe this image."},
+                    ],
+                }
+            ]
+            for img in batch_imgs
+        ]
+
+        batch_features: list[np.ndarray] = []
+
+        if layer == "vision_encoder":
+            for msgs, img in zip(messages_list, batch_imgs):
+                text = processor.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
+                inputs = processor(
+                    text=[text],
+                    images=[img],
+                    return_tensors="pt",
+                    padding=True,
+                )
+                inputs = {k: v.to(model.device) for k, v in inputs.items() if hasattr(v, "to")}
+
+                with torch.no_grad():
+                    pixel_values = inputs.get("pixel_values")
+                    image_grid_thw = inputs.get("image_grid_thw")
+                    if pixel_values is None:
+                        logger.warning("pixel_values が見つかりません。スキップします。")
+                        continue
+                    if image_grid_thw is not None:
+                        vision_out = model.visual(pixel_values.to(dtype), grid_thw=image_grid_thw)
+                    else:
+                        vision_out = model.visual(pixel_values.to(dtype))
+                    feat = vision_out.mean(dim=0).float().cpu().numpy()
+                    batch_features.append(feat)
+
+        elif layer == "llm_last":
+            for msgs, img in zip(messages_list, batch_imgs):
+                text = processor.apply_chat_template(msgs, tokenize=False, add_generation_prompt=True)
+                inputs = processor(
+                    text=[text],
+                    images=[img],
+                    return_tensors="pt",
+                    padding=True,
+                )
+                inputs = {k: v.to(model.device) for k, v in inputs.items() if hasattr(v, "to")}
+
+                with torch.no_grad():
+                    outputs = model(
+                        **inputs,
+                        output_hidden_states=True,
+                        return_dict=True,
+                    )
+                    last_hidden = outputs.hidden_states[-1]
+                    try:
+                        img_token_id = processor.tokenizer.convert_tokens_to_ids("<|image_pad|>")
+                    except Exception:
+                        img_token_id = None
+
+                    input_ids = inputs["input_ids"][0]
+                    if img_token_id is not None:
+                        mask = input_ids == img_token_id
+                        feat = (
+                            last_hidden[0][mask].mean(dim=0).float().cpu().numpy()
+                            if mask.sum() > 0
+                            else last_hidden[0].mean(dim=0).float().cpu().numpy()
+                        )
                     else:
                         feat = last_hidden[0].mean(dim=0).float().cpu().numpy()
                     batch_features.append(feat)
@@ -657,7 +802,12 @@ def main() -> None:
     logger.info(f"モデルファミリー: {family}")
 
     t0 = time.time()
-    if family == "qwen2vl":
+    if family == "qwen25vl":
+        features = _extract_qwen25vl(
+            args.model, images, args.layer, device, dtype, args.batch_size,
+            quantize=args.quantize,
+        )
+    elif family == "qwen2vl":
         features = _extract_qwen2vl(
             args.model, images, args.layer, device, dtype, args.batch_size,
             quantize=args.quantize,

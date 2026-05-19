@@ -24,7 +24,7 @@ set -euo pipefail
 # ---------------------------------------------------------------------------
 # デフォルト設定（環境変数で上書き可能）
 # ---------------------------------------------------------------------------
-LARGE_MODEL="${LARGE_MODEL:-Qwen/Qwen2-VL-7B-Instruct}"
+LARGE_MODEL="${LARGE_MODEL:-Qwen/Qwen2.5-VL-3B-Instruct}"
 SMALL_MODEL="${SMALL_MODEL:-Qwen/Qwen2-VL-2B-Instruct}"
 
 DATASET="${DATASET:-lmms-lab/POPE}"
@@ -226,7 +226,7 @@ STEP:
   dry-run    n=20 で全ステップの動作確認
 
 環境変数で設定を上書き可能:
-  LARGE_MODEL   (デフォルト: Qwen/Qwen2-VL-7B-Instruct)
+  LARGE_MODEL   (デフォルト: Qwen/Qwen2.5-VL-3B-Instruct)
   SMALL_MODEL   (デフォルト: Qwen/Qwen2-VL-2B-Instruct)
   DATASET       (デフォルト: nlphuji/flickr30k)
   LAYER         (デフォルト: vision_encoder)  vision_encoder | llm_last

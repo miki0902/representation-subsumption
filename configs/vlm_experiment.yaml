@@ -1,8 +1,8 @@
 experiment:
   name: "vlm_representation_subsumption"
-  large_model: "Qwen/Qwen2-VL-7B-Instruct"
+  large_model: "Qwen/Qwen2.5-VL-3B-Instruct"
   small_model: "Qwen/Qwen2-VL-2B-Instruct"
-  description: "Representation subsumption analysis for VLMs"
+  description: "Representation subsumption analysis for VLMs (Qwen2.5-VL-3B vs Qwen2-VL-2B, no quantization)"
 
 feature_extraction:
   dataset: "lmms-lab/POPE"
