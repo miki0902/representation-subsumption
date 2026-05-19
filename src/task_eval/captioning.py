@@ -160,8 +160,32 @@ class CaptioningEvaluator(BaseTaskEvaluator):
         """
         from datasets import load_dataset
 
-        logger.info(f"データセットをロード中: {_DATASET_NAME} (split={split})")
-        ds = load_dataset(_DATASET_NAME, split=split)
+        # Parquet 形式の代替候補（スクリプト形式は datasets>=2.x 非対応）
+        _CANDIDATES = [
+            (_DATASET_NAME, split),
+            ("lmms-lab/coco2014_cap_val", "val"),
+            ("lmms-lab/POPE", "test"),        # 画像のみ流用、キャプションなし
+        ]
+        ds = None
+        for ds_name, ds_split in _CANDIDATES:
+            try:
+                logger.info(f"データセットをロード中: {ds_name} (split={ds_split})")
+                ds = load_dataset(ds_name, split=ds_split)
+                if ds_name != _DATASET_NAME:
+                    logger.warning(
+                        f"'{_DATASET_NAME}' はスクリプト形式のため代替 '{ds_name}' を使用"
+                    )
+                break
+            except RuntimeError as e:
+                if "Dataset scripts are no longer supported" in str(e):
+                    logger.warning(f"'{ds_name}': スクリプト形式 — 次の候補へ")
+                    continue
+                raise
+        if ds is None:
+            raise RuntimeError(
+                "キャプションデータセットのロードに失敗。\n"
+                "lmms-lab/coco2014_cap_val が利用できるか確認してください。"
+            )
 
         if n_samples is not None:
             n_samples = min(n_samples, len(ds))

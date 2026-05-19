@@ -5,8 +5,8 @@ experiment:
   description: "Representation subsumption analysis for VLMs"
 
 feature_extraction:
-  dataset: "HuggingFaceM4/NoCaps"
-  dataset_split: "validation"
+  dataset: "lmms-lab/POPE"
+  dataset_split: "test"
   n_samples: 1000
   layer: "vision_encoder"   # vision_encoder | llm_last
   batch_size: 8
@@ -22,7 +22,7 @@ task_evaluation:
     - binary
   n_samples_per_task: 500
   datasets:
-    captioning: "HuggingFaceM4/NoCaps"
+    captioning: "lmms-lab/POPE"
     vqa: "HuggingFaceM4/VQAv2"
     multiple_choice: "derek-thomas/ScienceQA"
     binary: "lmms-lab/POPE"

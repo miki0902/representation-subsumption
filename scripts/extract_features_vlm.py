@@ -401,15 +401,49 @@ def _extract_generic(
 def load_images(dataset_name: str, split: str, n_samples: int | None) -> list:
     """HuggingFace datasets から PIL 画像のリストを返す。
 
-    なぜ image カラムを使うか:
-      VLM は画像入力を前提としており、datasets ライブラリの
-      image カラムは PIL.Image オブジェクトとして自動デコードされるため
-      前処理の手間が省ける。
+    ローディングスクリプト形式（.py）のデータセットは datasets>=2.x で非対応。
+    エラー時は代替候補を順に試す。
     """
     from datasets import load_dataset
 
-    logger.info(f"データセットをロード中: {dataset_name} (split={split})")
-    ds = load_dataset(dataset_name, split=split)
+    # 旧スクリプト形式データセットから Parquet 形式への代替候補
+    # split も合わせて調整（datasets によって split 名が異なる）
+    _FALLBACKS: dict[str, list[tuple[str, str]]] = {
+        "nlphuji/flickr30k":     [("lmms-lab/POPE", "test")],
+        "HuggingFaceM4/NoCaps":  [("lmms-lab/POPE", "test")],
+    }
+
+    candidates: list[tuple[str, str]] = [(dataset_name, split)]
+    candidates += _FALLBACKS.get(dataset_name, [])
+
+    ds = None
+    for ds_name, ds_split in candidates:
+        try:
+            logger.info(f"データセットをロード中: {ds_name} (split={ds_split})")
+            ds = load_dataset(ds_name, split=ds_split)
+            if ds_name != dataset_name:
+                logger.warning(
+                    f"'{dataset_name}' はスクリプト形式のため非対応。"
+                    f"代替 '{ds_name}' (split={ds_split}) を使用します。"
+                )
+            break
+        except RuntimeError as e:
+            if "Dataset scripts are no longer supported" in str(e):
+                logger.warning(
+                    f"'{ds_name}': ローディングスクリプト形式は非対応 — 次の候補へ"
+                )
+                continue
+            raise
+
+    if ds is None:
+        tried = [f"{n} (split={s})" for n, s in candidates]
+        raise RuntimeError(
+            "全ての候補データセットが失敗しました:\n  " + "\n  ".join(tried) + "\n"
+            "Parquet 形式のデータセットを --dataset で指定してください。\n"
+            "動作確認済みの例:\n"
+            "  lmms-lab/POPE            (split=test)\n"
+            "  lmms-lab/flickr30k       (split=test) ※存在する場合\n"
+        )
 
     if n_samples is not None:
         n_samples = min(n_samples, len(ds))
@@ -491,10 +525,10 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--dataset",
-        default="HuggingFaceM4/NoCaps",
+        default="lmms-lab/POPE",
         help="HuggingFace datasets のデータセット名 (Parquet形式のみ対応)",
     )
-    p.add_argument("--split", default="validation", help="データセット分割")
+    p.add_argument("--split", default="test", help="データセット分割")
     p.add_argument(
         "--n-samples",
         type=int,
