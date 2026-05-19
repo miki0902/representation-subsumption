@@ -1251,6 +1251,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--seed", type=int, default=42)
     p.add_argument("--debug", action="store_true")
     p.add_argument("--figures", action="store_true", help="図を生成する（matplotlib が必要）")
+    p.add_argument("--vis-max-points", type=int, default=500,
+                   help="幾何可視化に使う最大サンプル数（デフォルト: 500）")
     # dry-run: パイプライン全体が動くかを少数サンプルで確認するモード
     p.add_argument("--dry-run", action="store_true",
                    help="dry-run モード: 少数サンプルで全パイプラインの動作確認を行う")
@@ -1335,6 +1337,7 @@ def _log_config(args: argparse.Namespace) -> None:
     logger.info(f"  standardize  : {not args.no_standardize}")
     if args.dry_run:
         logger.info(f"[設定] dry-run  : True (samples={args.dry_run_samples})")
+    logger.info(f"[設定] vis_max_points: {args.vis_max_points}")
     logger.info("=" * 50)
 
 
@@ -1435,6 +1438,7 @@ def main() -> None:
             aux = visualize_geometry_inline(
                 F_L, F_S, cca, reg_s_to_l,
                 output_dir=str(Path(args.output_dir) / "figures"),
+                max_points=args.vis_max_points,
                 seed=args.seed,
             )
             logger.info(
