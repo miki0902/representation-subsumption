@@ -27,8 +27,8 @@ set -euo pipefail
 LARGE_MODEL="${LARGE_MODEL:-Qwen/Qwen2-VL-7B-Instruct}"
 SMALL_MODEL="${SMALL_MODEL:-Qwen/Qwen2-VL-2B-Instruct}"
 
-DATASET="${DATASET:-nlphuji/flickr30k}"
-DATASET_SPLIT="${DATASET_SPLIT:-test}"
+DATASET="${DATASET:-HuggingFaceM4/NoCaps}"
+DATASET_SPLIT="${DATASET_SPLIT:-validation}"
 LAYER="${LAYER:-vision_encoder}"     # vision_encoder | llm_last
 
 N_SAMPLES="${N_SAMPLES:-1000}"       # 特徴量抽出サンプル数

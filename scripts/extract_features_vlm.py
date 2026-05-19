@@ -409,7 +409,7 @@ def load_images(dataset_name: str, split: str, n_samples: int | None) -> list:
     from datasets import load_dataset
 
     logger.info(f"データセットをロード中: {dataset_name} (split={split})")
-    ds = load_dataset(dataset_name, split=split, trust_remote_code=True)
+    ds = load_dataset(dataset_name, split=split)
 
     if n_samples is not None:
         n_samples = min(n_samples, len(ds))
@@ -491,10 +491,10 @@ def parse_args() -> argparse.Namespace:
     )
     p.add_argument(
         "--dataset",
-        default="nlphuji/flickr30k",
-        help="HuggingFace datasets のデータセット名",
+        default="HuggingFaceM4/NoCaps",
+        help="HuggingFace datasets のデータセット名 (Parquet形式のみ対応)",
     )
-    p.add_argument("--split", default="test", help="データセット分割")
+    p.add_argument("--split", default="validation", help="データセット分割")
     p.add_argument(
         "--n-samples",
         type=int,

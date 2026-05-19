@@ -1,8 +1,8 @@
-"""Image captioning evaluator — Flickr30k dataset, BLEU-4 + CIDEr metrics.
+"""Image captioning evaluator — NoCaps dataset, BLEU-4 + CIDEr metrics.
 
 評価内容:
-  - データセット: nlphuji/flickr30k (test split)
-  - 各画像に対して 5 つの参照キャプションが用意されている
+  - データセット: HuggingFaceM4/NoCaps (validation split, 4500 画像)
+  - 各画像に対して 11 の参照キャプションが用意されている
   - 生成したキャプションを参照キャプションと比較して BLEU-4 と CIDEr を計算する
 
 メトリクス:
@@ -31,8 +31,9 @@ logger = logging.getLogger(__name__)
 _DEFAULT_N_SAMPLES = 500
 
 # データセット設定
-_DATASET_NAME = "nlphuji/flickr30k"
-_DATASET_SPLIT = "test"
+# HuggingFaceM4/NoCaps は Parquet 形式で trust_remote_code 不要
+_DATASET_NAME = "HuggingFaceM4/NoCaps"
+_DATASET_SPLIT = "validation"
 
 
 def _normalize_text(text: str) -> str:
@@ -160,24 +161,35 @@ class CaptioningEvaluator(BaseTaskEvaluator):
         from datasets import load_dataset
 
         logger.info(f"データセットをロード中: {_DATASET_NAME} (split={split})")
-        ds = load_dataset(_DATASET_NAME, split=split, trust_remote_code=True)
+        ds = load_dataset(_DATASET_NAME, split=split)
 
         if n_samples is not None:
             n_samples = min(n_samples, len(ds))
             ds = ds.select(range(n_samples))
 
-        logger.info(f"ロード完了: {len(ds)} サンプル")
+        logger.info(f"ロード完了: {len(ds)} サンプル  カラム: {ds.column_names}")
 
         samples = []
         for i in range(len(ds)):
             row = ds[i]
             img = row["image"]
-            # caption カラムは list[str] または str の場合がある
-            raw_cap = row.get("caption", row.get("captions", []))
+
+            # NoCaps: annotations_captions (list[str])
+            # Flickr30k 系: caption (list[str] or str)
+            raw_cap = (
+                row.get("annotations_captions")
+                or row.get("caption")
+                or row.get("captions")
+                or []
+            )
             if isinstance(raw_cap, str):
                 captions = [raw_cap]
             else:
-                captions = list(raw_cap)
+                captions = [c for c in raw_cap if isinstance(c, str)]
+
+            if not captions:
+                logger.debug(f"サンプル {i}: キャプションなし — スキップ")
+                continue
 
             samples.append({
                 "image": img.convert("RGB") if hasattr(img, "convert") else img,
