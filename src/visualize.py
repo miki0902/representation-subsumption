@@ -2,9 +2,12 @@
 幾何可視化: Large / Small / pseudo-Large / merge 空間の2D比較図。
 
 3パネル構成:
-  (A) pre-inclusion: CCA 共通空間上の Z_L vs Z_S
-  (B) post-inclusion: Large 特徴空間上の F_L vs pseudo-Large (F_S→F_L 線形写像)
-  (C) merge space: CCA 共通空間上の Z_L vs Z_S vs Z_PL (pseudo-Large の射影)
+  (A) CCA common space: Z_L vs Z_S
+      d_L≠d_S のため可視化専用に CCA で共通空間へ射影。写像前の生の表現を比較。
+  (B) post-inclusion (Large feature space): F_L vs pseudo-Large
+      Small を S→L 線形写像で Large 空間に持ち上げた pseudo-Large と本物の Large を比較。
+  (C) merge space: Z_L vs Z_S
+      CCA 正準空間上での Large と Small の幾何的配置を確認。
 
 同じ座標系保証:
   各パネルで比較する全群を結合してから reducer を1回 fit し、
@@ -274,12 +277,11 @@ def visualize_geometry(
     coords_B_L = coords_B[:n_L]
     coords_B_PL = coords_B[n_L:]
 
-    # Step 5: Panel C — CCA space Z_L vs Z_S vs Z_PL
-    joint_C = np.concatenate([Z_L, Z_S, Z_PL], axis=0)
+    # Step 5: Panel C — Merge space: Z_L vs Z_S のみ（同じ joint_A の reducer を再利用せず独立に fit）
+    joint_C = np.concatenate([Z_L, Z_S], axis=0)
     coords_C, _ = _build_reducer(joint_C, seed=seed, pca_pre_dim=pca_pre_dim)
     coords_C_L = coords_C[:n_L]
-    coords_C_S = coords_C[n_L: 2 * n_L]
-    coords_C_PL = coords_C[2 * n_L:]
+    coords_C_S = coords_C[n_L:]
 
     # Step 6: Create figure
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
@@ -289,7 +291,7 @@ def visualize_geometry(
         [coords_A_L, coords_A_S],
         ["Large", "Small"],
         ["steelblue", "salmon"],
-        "(A) Pre-inclusion: CCA space",
+        "(A) CCA Common Space: Large vs Small",
         method_name,
         draw_connections=draw_connections,
         point_labels=labels_sub,
@@ -298,9 +300,9 @@ def visualize_geometry(
     _draw_scatter(
         axes[1],
         [coords_B_L, coords_B_PL],
-        ["Large", "pseudo-Large"],
+        ["Large", "pseudo-Large (S→L)"],
         ["steelblue", "mediumseagreen"],
-        "(B) Post-inclusion: Feature space",
+        "(B) Large Feature Space: Original vs Reconstructed",
         method_name,
         draw_connections=draw_connections,
         point_labels=labels_sub,
@@ -308,12 +310,12 @@ def visualize_geometry(
 
     _draw_scatter(
         axes[2],
-        [coords_C_L, coords_C_S, coords_C_PL],
-        ["Large", "Small", "pseudo-Large"],
-        ["steelblue", "salmon", "mediumseagreen"],
-        "(C) Merge space: CCA + pseudo-Large",
+        [coords_C_L, coords_C_S],
+        ["Large", "Small"],
+        ["steelblue", "salmon"],
+        "(C) Merge Space (CCA canonical)",
         method_name,
-        draw_connections=False,
+        draw_connections=draw_connections,
         point_labels=labels_sub,
     )
 

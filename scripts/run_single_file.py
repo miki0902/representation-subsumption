@@ -1158,11 +1158,10 @@ def visualize_geometry_inline(
     coords_B_L = coords_B[:n_L]
     coords_B_PL = coords_B[n_L:]
 
-    joint_C = np.concatenate([Z_L, Z_S, Z_PL], axis=0)
+    joint_C = np.concatenate([Z_L, Z_S], axis=0)
     coords_C, _ = _build_reducer_inline(joint_C, seed=seed, pca_pre_dim=pca_pre_dim)
     coords_C_L = coords_C[:n_L]
-    coords_C_S = coords_C[n_L: 2 * n_L]
-    coords_C_PL = coords_C[2 * n_L:]
+    coords_C_S = coords_C[n_L:]
 
     fig, axes = plt.subplots(1, 3, figsize=(18, 6))
 
@@ -1171,7 +1170,7 @@ def visualize_geometry_inline(
         [coords_A_L, coords_A_S],
         ["Large", "Small"],
         ["steelblue", "salmon"],
-        "(A) Pre-inclusion: CCA space",
+        "(A) CCA Common Space: Large vs Small",
         method_name,
         draw_connections=draw_connections,
         point_labels=labels_sub,
@@ -1180,9 +1179,9 @@ def visualize_geometry_inline(
     _draw_scatter_inline(
         axes[1],
         [coords_B_L, coords_B_PL],
-        ["Large", "pseudo-Large"],
+        ["Large", "pseudo-Large (S→L)"],
         ["steelblue", "mediumseagreen"],
-        "(B) Post-inclusion: Feature space",
+        "(B) Large Feature Space: Original vs Reconstructed",
         method_name,
         draw_connections=draw_connections,
         point_labels=labels_sub,
@@ -1190,12 +1189,12 @@ def visualize_geometry_inline(
 
     _draw_scatter_inline(
         axes[2],
-        [coords_C_L, coords_C_S, coords_C_PL],
-        ["Large", "Small", "pseudo-Large"],
-        ["steelblue", "salmon", "mediumseagreen"],
-        "(C) Merge space: CCA + pseudo-Large",
+        [coords_C_L, coords_C_S],
+        ["Large", "Small"],
+        ["steelblue", "salmon"],
+        "(C) Merge Space (CCA canonical)",
         method_name,
-        draw_connections=False,
+        draw_connections=draw_connections,
         point_labels=labels_sub,
     )
 
