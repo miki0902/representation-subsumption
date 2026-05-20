@@ -225,8 +225,9 @@ def _extract_qwen2vl(
                         vision_out = visual_module(pixel_values.to(dtype), grid_thw=image_grid_thw)
                     else:
                         vision_out = visual_module(pixel_values.to(dtype))
-                    # vision_out: (num_image_tokens, d) → mean pool → (d,)
-                    feat = vision_out.mean(dim=0).float().cpu().numpy()
+                    # Qwen2-VL はテンソル、Qwen2.5-VL は BaseModelOutputWithPooling
+                    vision_tensor = _vision_out_to_tensor(vision_out)
+                    feat = vision_tensor.mean(dim=0).float().cpu().numpy()
                     batch_features.append(feat)
 
         elif layer == "llm_last":
@@ -278,8 +279,36 @@ def _extract_qwen2vl(
 
 
 # ---------------------------------------------------------------------------
-# Qwen2.5-VL 特徴量抽出
+# Qwen2.x-VL 共通ユーティリティ
 # ---------------------------------------------------------------------------
+
+def _vision_out_to_tensor(vision_out):
+    """ビジョンエンコーダの出力を 2D テンソル (num_tokens, hidden_dim) に変換する。
+
+    Qwen2-VL   : visual() が tensor (num_tokens, d) を直接返す
+    Qwen2.5-VL : visual() が BaseModelOutputWithPooling を返す
+                 → last_hidden_state (1, num_tokens, d) または (num_tokens, d)
+    """
+    import torch
+    if isinstance(vision_out, torch.Tensor):
+        return vision_out  # Qwen2-VL: すでにテンソル
+
+    # BaseModelOutputWithPooling などの dataclass 系出力
+    if hasattr(vision_out, "last_hidden_state") and vision_out.last_hidden_state is not None:
+        t = vision_out.last_hidden_state
+    elif hasattr(vision_out, "pooler_output") and vision_out.pooler_output is not None:
+        t = vision_out.pooler_output
+    else:
+        raise ValueError(
+            f"ビジョンエンコーダ出力から特徴量テンソルを取り出せません: {type(vision_out)}\n"
+            f"属性: {[k for k in vision_out.keys() if vision_out[k] is not None]}"
+        )
+
+    # バッチ次元 (1, num_tokens, d) → (num_tokens, d)
+    if t.dim() == 3 and t.shape[0] == 1:
+        t = t.squeeze(0)
+    return t
+
 
 def _resolve_visual_module(model):
     """Qwen 系モデルのビジョンエンコーダモジュールを解決する。
