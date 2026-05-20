@@ -176,6 +176,10 @@ def _extract_qwen2vl(
     model.eval()
     processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
 
+    # バージョン差を吸収: model.visual または model.model.visual
+    visual_module = _resolve_visual_module(model)
+    logger.info(f"ビジョンエンコーダを解決: {type(visual_module).__name__}")
+
     all_features: list[np.ndarray] = []
     n_batches = (len(images) + batch_size - 1) // batch_size
 
@@ -218,9 +222,9 @@ def _extract_qwen2vl(
                         logger.warning("pixel_values が見つかりません。空の特徴量をスキップします。")
                         continue
                     if image_grid_thw is not None:
-                        vision_out = model.visual(pixel_values.to(dtype), grid_thw=image_grid_thw)
+                        vision_out = visual_module(pixel_values.to(dtype), grid_thw=image_grid_thw)
                     else:
-                        vision_out = model.visual(pixel_values.to(dtype))
+                        vision_out = visual_module(pixel_values.to(dtype))
                     # vision_out: (num_image_tokens, d) → mean pool → (d,)
                     feat = vision_out.mean(dim=0).float().cpu().numpy()
                     batch_features.append(feat)
@@ -277,6 +281,30 @@ def _extract_qwen2vl(
 # Qwen2.5-VL 特徴量抽出
 # ---------------------------------------------------------------------------
 
+def _resolve_visual_module(model):
+    """Qwen 系モデルのビジョンエンコーダモジュールを解決する。
+
+    Qwen2-VL   : model.visual          (ForConditionalGeneration 直下)
+    Qwen2.5-VL : model.model.visual    (inner Qwen2_5_VLModel 下に移動)
+
+    どちらにも対応できるよう順番に試す。
+    """
+    # 直下にある場合（Qwen2-VL）
+    visual = getattr(model, "visual", None)
+    if visual is not None:
+        return visual
+    # inner model 下にある場合（Qwen2.5-VL）
+    inner = getattr(model, "model", None)
+    if inner is not None:
+        visual = getattr(inner, "visual", None)
+        if visual is not None:
+            return visual
+    raise AttributeError(
+        f"{type(model).__name__} に 'visual' モジュールが見つかりません。"
+        f"利用可能な属性: {[n for n, _ in model.named_children()]}"
+    )
+
+
 def _extract_qwen25vl(
     model_name: str,
     images: list,
@@ -288,16 +316,15 @@ def _extract_qwen25vl(
 ) -> np.ndarray:
     """Qwen2.5-VL のビジョンエンコーダまたは LLM 最終層から特徴量を抽出する。
 
-    Qwen2.5-VL は Qwen2-VL と同様の構造を持つが、
-    モデルクラスが Qwen2_5_VLForConditionalGeneration に変更されている。
-    visual サブモジュールの使い方は Qwen2-VL と同じ。
+    Qwen2.5-VL (Qwen2_5_VLForConditionalGeneration) では
+    ビジョンエンコーダが model.model.visual に移動している。
+    _resolve_visual_module() で自動解決する。
     """
     import torch
     from transformers import AutoProcessor
     try:
         from transformers import Qwen2_5_VLForConditionalGeneration
     except ImportError:
-        # 旧バージョンの transformers では未定義の場合がある
         logger.warning(
             "Qwen2_5_VLForConditionalGeneration が見つかりません。"
             "transformers を最新版にアップデートしてください: pip install -U transformers"
@@ -322,6 +349,10 @@ def _extract_qwen25vl(
     )
     model.eval()
     processor = AutoProcessor.from_pretrained(model_name, trust_remote_code=True)
+
+    # Qwen2.5-VL では model.model.visual にエンコーダがある
+    visual_module = _resolve_visual_module(model)
+    logger.info(f"ビジョンエンコーダを解決: {type(visual_module).__name__}")
 
     all_features: list[np.ndarray] = []
     n_batches = (len(images) + batch_size - 1) // batch_size
@@ -362,9 +393,9 @@ def _extract_qwen25vl(
                         logger.warning("pixel_values が見つかりません。スキップします。")
                         continue
                     if image_grid_thw is not None:
-                        vision_out = model.visual(pixel_values.to(dtype), grid_thw=image_grid_thw)
+                        vision_out = visual_module(pixel_values.to(dtype), grid_thw=image_grid_thw)
                     else:
-                        vision_out = model.visual(pixel_values.to(dtype))
+                        vision_out = visual_module(pixel_values.to(dtype))
                     feat = vision_out.mean(dim=0).float().cpu().numpy()
                     batch_features.append(feat)
 
